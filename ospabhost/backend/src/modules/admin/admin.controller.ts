@@ -1,5 +1,6 @@
 import { Request, Response } from 'express';
 import { prisma } from '../../prisma/client';
+import { createNotification } from '../notification/notification.controller';
 
 /**
  * Middleware для проверки прав администратора
@@ -44,7 +45,7 @@ export class AdminController {
           createdAt: true,
           _count: {
             select: {
-              servers: true,
+              buckets: true,
               tickets: true
             }
           }
@@ -71,11 +72,8 @@ export class AdminController {
       const user = await prisma.user.findUnique({
         where: { id: userId },
         include: {
-          servers: {
-            include: {
-              tariff: true,
-              os: true
-            }
+          buckets: {
+            orderBy: { createdAt: 'desc' }
           },
           checks: {
             orderBy: { createdAt: 'desc' },
@@ -139,15 +137,17 @@ export class AdminController {
             balanceAfter,
             adminId
           }
-        }),
-        prisma.notification.create({
-          data: {
-            userId,
-            title: 'Пополнение баланса',
-            message: `На ваш счёт зачислено ${amount}₽. ${description || ''}`
-          }
         })
       ]);
+
+      // Создаём уведомление через новую систему
+      await createNotification({
+        userId,
+        type: 'balance_deposit',
+        title: 'Пополнение баланса',
+        message: `На ваш счёт зачислено ${amount}₽. ${description || ''}`,
+        color: 'green'
+      });
 
       res.json({ 
         status: 'success', 
@@ -200,15 +200,17 @@ export class AdminController {
             balanceAfter,
             adminId
           }
-        }),
-        prisma.notification.create({
-          data: {
-            userId,
-            title: 'Списание с баланса',
-            message: `С вашего счёта списано ${amount}₽. ${description || ''}`
-          }
         })
       ]);
+
+      // Создаём уведомление через новую систему
+      await createNotification({
+        userId,
+        type: 'balance_withdrawal',
+        title: 'Списание с баланса',
+        message: `С вашего счёта списано ${amount}₽. ${description || ''}`,
+        color: 'red'
+      });
 
       res.json({ 
         status: 'success', 
@@ -222,47 +224,41 @@ export class AdminController {
   }
 
   /**
-   * Удалить сервер пользователя
+   * Удалить S3 бакет пользователя
    */
-  async deleteServer(req: Request, res: Response) {
+  async deleteBucket(req: Request, res: Response) {
     try {
-      const serverId = parseInt(req.params.serverId);
+      const bucketId = parseInt(req.params.bucketId);
       const { reason } = req.body;
-      const adminId = (req as any).user?.id;
 
-      const server = await prisma.server.findUnique({
-        where: { id: serverId },
-        include: { user: true, tariff: true }
+      const bucket = await prisma.storageBucket.findUnique({
+        where: { id: bucketId },
+        include: { user: true }
       });
 
-      if (!server) {
-        return res.status(404).json({ message: 'Сервер не найден' });
+      if (!bucket) {
+        return res.status(404).json({ message: 'Бакет не найден' });
       }
 
-      // Удаляем сервер из Proxmox (если есть proxmoxId)
-      // TODO: Добавить вызов proxmoxApi.deleteContainer(server.proxmoxId)
+      await prisma.storageBucket.delete({
+        where: { id: bucketId }
+      });
 
-      // Удаляем из БД
-      await prisma.$transaction([
-        prisma.server.delete({
-          where: { id: serverId }
-        }),
-        prisma.notification.create({
-          data: {
-            userId: server.userId,
-            title: 'Сервер удалён',
-            message: `Ваш сервер #${serverId} был удалён администратором. ${reason ? `Причина: ${reason}` : ''}`
-          }
-        })
-      ]);
+      await createNotification({
+        userId: bucket.userId,
+        type: 'storage_bucket_deleted',
+        title: 'Бакет удалён',
+        message: `Ваш бакет «${bucket.name}» был удалён администратором. ${reason ? `Причина: ${reason}` : ''}`,
+        color: 'red'
+      });
 
       res.json({ 
         status: 'success', 
-        message: `Сервер #${serverId} удалён`
+        message: `Бакет «${bucket.name}» удалён`
       });
     } catch (error) {
-      console.error('Ошибка удаления сервера:', error);
-      res.status(500).json({ message: 'Ошибка удаления сервера' });
+      console.error('Ошибка удаления бакета:', error);
+      res.status(500).json({ message: 'Ошибка удаления бакета' });
     }
   }
 
@@ -273,20 +269,26 @@ export class AdminController {
     try {
       const [
         totalUsers,
-        totalServers,
-        activeServers,
-        suspendedServers,
+        totalBuckets,
+        publicBuckets,
         totalBalance,
         pendingChecks,
-        openTickets
+        openTickets,
+        bucketsAggregates
       ] = await Promise.all([
         prisma.user.count(),
-        prisma.server.count(),
-        prisma.server.count({ where: { status: 'running' } }),
-        prisma.server.count({ where: { status: 'suspended' } }),
+        prisma.storageBucket.count(),
+        prisma.storageBucket.count({ where: { public: true } }),
         prisma.user.aggregate({ _sum: { balance: true } }),
         prisma.check.count({ where: { status: 'pending' } }),
-        prisma.ticket.count({ where: { status: 'open' } })
+        prisma.ticket.count({ where: { status: 'open' } }),
+        prisma.storageBucket.aggregate({
+          _sum: {
+            usedBytes: true,
+            objectCount: true,
+            quotaGb: true
+          }
+        })
       ]);
 
       // Получаем последние транзакции
@@ -310,10 +312,12 @@ export class AdminController {
           users: {
             total: totalUsers
           },
-          servers: {
-            total: totalServers,
-            active: activeServers,
-            suspended: suspendedServers
+          storage: {
+            total: totalBuckets,
+            public: publicBuckets,
+            objects: bucketsAggregates._sum.objectCount ?? 0,
+            usedBytes: bucketsAggregates._sum.usedBytes ?? 0,
+            quotaGb: bucketsAggregates._sum.quotaGb ?? 0
           },
           balance: {
             total: totalBalance._sum.balance || 0

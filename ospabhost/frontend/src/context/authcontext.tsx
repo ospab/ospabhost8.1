@@ -2,23 +2,28 @@
 import { createContext, useState, useEffect } from 'react';
 import type { ReactNode } from 'react';
 
+import apiClient from '../utils/apiClient';
 import type { UserData } from '../pages/dashboard/types';
 
 interface AuthContextType {
   isLoggedIn: boolean;
+  isInitialized: boolean;
   userData: UserData | null;
   setUserData: (data: UserData | null) => void;
   login: (token: string) => void;
   logout: () => void;
+  refreshUser: () => Promise<void>;
 }
 
 // Создаем контекст с начальными значениями
 const AuthContext = createContext<AuthContextType>({
   isLoggedIn: false,
+  isInitialized: false,
   userData: null,
   setUserData: () => {},
   login: () => {},
   logout: () => {},
+  refreshUser: async () => {},
 });
 
 interface AuthProviderProps {
@@ -29,16 +34,57 @@ interface AuthProviderProps {
 export const AuthProvider = ({ children }: AuthProviderProps) => {
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [userData, setUserData] = useState<UserData | null>(null);
+  const [isInitialized, setIsInitialized] = useState(false);
+
+  const bootstrapSession = async () => {
+    const token = localStorage.getItem('access_token');
+    if (!token) {
+      setIsLoggedIn(false);
+      setUserData(null);
+      setIsInitialized(true);
+      return;
+    }
+
+    try {
+      const response = await apiClient.get('/api/auth/me');
+      const fetchedUser: UserData['user'] = response.data.user;
+      setUserData({
+        user: fetchedUser,
+        balance: fetchedUser.balance ?? 0,
+        tickets: fetchedUser.tickets ?? [],
+      });
+      setIsLoggedIn(true);
+    } catch (error) {
+      console.warn('[Auth] bootstrap failed, clearing token', error);
+      localStorage.removeItem('access_token');
+      setIsLoggedIn(false);
+      setUserData(null);
+    } finally {
+      setIsInitialized(true);
+    }
+  };
 
   useEffect(() => {
-    const token = localStorage.getItem('access_token');
-    setIsLoggedIn(!!token);
-    // Можно добавить загрузку userData при наличии токена
+    bootstrapSession();
+
+    // Слушаем событие unauthorized из apiClient
+    const handleUnauthorized = () => {
+      setIsLoggedIn(false);
+      setUserData(null);
+      window.location.href = '/401';
+    };
+    
+    window.addEventListener('unauthorized', handleUnauthorized);
+    
+    return () => {
+      window.removeEventListener('unauthorized', handleUnauthorized);
+    };
   }, []);
 
   const login = (token: string) => {
     localStorage.setItem('access_token', token);
-    setIsLoggedIn(true);
+    // После установки токена немедленно валидируем пользователя
+    bootstrapSession();
   };
 
   const logout = () => {
@@ -47,8 +93,30 @@ export const AuthProvider = ({ children }: AuthProviderProps) => {
     setUserData(null);
   };
 
+  const refreshUser = async () => {
+    const token = localStorage.getItem('access_token');
+    if (!token) {
+      logout();
+      return;
+    }
+
+    try {
+      const response = await apiClient.get('/api/auth/me');
+      const fetchedUser: UserData['user'] = response.data.user;
+      setUserData({
+        user: fetchedUser,
+        balance: fetchedUser.balance ?? 0,
+        tickets: fetchedUser.tickets ?? [],
+      });
+      setIsLoggedIn(true);
+    } catch (error) {
+      console.error('[Auth] refreshUser failed', error);
+      logout();
+    }
+  };
+
   return (
-    <AuthContext.Provider value={{ isLoggedIn, userData, setUserData, login, logout }}>
+    <AuthContext.Provider value={{ isLoggedIn, isInitialized, userData, setUserData, login, logout, refreshUser }}>
       {children}
     </AuthContext.Provider>
   );

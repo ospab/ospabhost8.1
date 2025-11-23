@@ -2,6 +2,7 @@ import { Link } from 'react-router-dom';
 import { useState } from 'react';
 import useAuth from '../context/useAuth';
 import logo from '../assets/logo.svg';
+import NotificationBell from './NotificationBell';
 
 const Header = () => {
   const { isLoggedIn, logout } = useAuth();
@@ -18,7 +19,7 @@ const Header = () => {
         <div className="flex justify-between items-center">
           <div className="flex items-center gap-1">
             <Link to="/" className="flex items-center">
-              <img src={logo} alt="Логотип" className="h-10 lg:h-14 w-auto mr-2" />
+              <img src={logo} alt="Логотип" className="h-10 lg:h-14 w-auto mr-2" width="56" height="56" />
               <span className="font-mono text-xl lg:text-2xl text-gray-800 font-bold">ospab.host</span>
             </Link>
           </div>
@@ -26,10 +27,12 @@ const Header = () => {
           {/* Desktop Menu */}
           <div className="hidden md:flex items-center space-x-4">
             <Link to="/tariffs" className="text-gray-600 hover:text-ospab-primary transition-colors">Тарифы</Link>
+            <Link to="/blog" className="text-gray-600 hover:text-ospab-primary transition-colors">Блог</Link>
             <Link to="/about" className="text-gray-600 hover:text-ospab-primary transition-colors">О нас</Link>
             {isLoggedIn ? (
               <>
                 <Link to="/dashboard" className="text-gray-600 hover:text-ospab-primary transition-colors">Личный кабинет</Link>
+                <NotificationBell />
                 <button
                   onClick={handleLogout}
                   className="px-4 py-2 rounded-full text-white font-bold transition-colors transform hover:scale-105 bg-gray-500 hover:bg-red-500"
@@ -54,8 +57,10 @@ const Header = () => {
           <button
             onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
             className="md:hidden p-2 text-gray-800"
+            aria-label={isMobileMenuOpen ? "Закрыть меню" : "Открыть меню"}
+            aria-expanded={isMobileMenuOpen}
           >
-            <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
               {isMobileMenuOpen ? (
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
               ) : (
@@ -74,6 +79,13 @@ const Header = () => {
               onClick={() => setIsMobileMenuOpen(false)}
             >
               Тарифы
+            </Link>
+            <Link 
+              to="/blog" 
+              className="block py-2 text-gray-600 hover:text-ospab-primary transition-colors"
+              onClick={() => setIsMobileMenuOpen(false)}
+            >
+              Блог
             </Link>
             <Link 
               to="/about" 

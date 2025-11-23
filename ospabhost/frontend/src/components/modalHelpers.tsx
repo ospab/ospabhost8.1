@@ -18,10 +18,10 @@ export const showAlert = (message: string, type: 'success' | 'error' | 'info' | 
     };
 
     const iconMap = {
-      success: '✅',
-      error: '❌',
-      info: 'ℹ️',
-      warning: '⚠️'
+      success: '✓',
+      error: '×',
+      info: 'i',
+      warning: '!'
     };
 
     root.render(

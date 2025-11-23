@@ -1,5 +1,6 @@
 import nodemailer from 'nodemailer';
 import { PrismaClient } from '@prisma/client';
+import { logger } from '../../utils/logger';
 
 const prisma = new PrismaClient();
 
@@ -28,7 +29,7 @@ export async function sendEmail(notification: EmailNotification) {
   try {
     // Проверяем наличие конфигурации SMTP
     if (!process.env.SMTP_USER || !process.env.SMTP_PASS) {
-      console.log('SMTP not configured, skipping email notification');
+      logger.debug('SMTP not configured, skipping email notification');
       return { status: 'skipped', message: 'SMTP not configured' };
     }
 
@@ -37,10 +38,10 @@ export async function sendEmail(notification: EmailNotification) {
       ...notification
     });
 
-    console.log('Email sent: %s', info.messageId);
+    logger.info('Email sent: %s', info.messageId);
     return { status: 'success', messageId: info.messageId };
   } catch (error: any) {
-    console.error('Error sending email:', error);
+    logger.error('Error sending email:', error);
     return { status: 'error', message: error.message };
   }
 }
@@ -70,7 +71,7 @@ export async function sendResourceAlertEmail(userId: number, serverId: number, a
       html
     });
   } catch (error: any) {
-    console.error('Error sending resource alert email:', error);
+    logger.error('Error sending resource alert email:', error);
     return { status: 'error', message: error.message };
   }
 }
@@ -102,7 +103,7 @@ export async function sendServerCreatedEmail(userId: number, serverId: number, s
       html
     });
   } catch (error: any) {
-    console.error('Error sending server created email:', error);
+    logger.error('Error sending server created email:', error);
     return { status: 'error', message: error.message };
   }
 }
@@ -129,7 +130,7 @@ export async function sendPaymentReminderEmail(userId: number, serverId: number,
       html
     });
   } catch (error: any) {
-    console.error('Error sending payment reminder email:', error);
+    logger.error('Error sending payment reminder email:', error);
     return { status: 'error', message: error.message };
   }
 }

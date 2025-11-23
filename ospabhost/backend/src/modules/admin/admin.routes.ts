@@ -18,7 +18,7 @@ router.post('/users/:userId/balance/add', adminController.addBalance.bind(adminC
 router.post('/users/:userId/balance/withdraw', adminController.withdrawBalance.bind(adminController));
 router.patch('/users/:userId/role', adminController.updateUserRole.bind(adminController));
 
-// Управление серверами
-router.delete('/servers/:serverId', adminController.deleteServer.bind(adminController));
+// Управление S3 бакетами
+router.delete('/buckets/:bucketId', adminController.deleteBucket.bind(adminController));
 
 export default router;

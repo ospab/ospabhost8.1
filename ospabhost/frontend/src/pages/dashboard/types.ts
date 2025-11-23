@@ -1,7 +1,12 @@
 export interface User {
+  id?: number;
   username: string;
+  email?: string;
   operator: number;
   isAdmin?: boolean;
+  balance?: number;
+  tickets?: Ticket[];
+  buckets?: StorageBucket[];
 }
 
 export interface Ticket {
@@ -14,16 +19,23 @@ export interface Ticket {
   user?: { username: string };
 }
 
-export interface Server {
+export interface StorageBucket {
   id: number;
   name: string;
-  status: string;
-  // можно добавить другие поля по необходимости
+  plan: string;
+  quotaGb: number;
+  usedBytes: number;
+  objectCount: number;
+  storageClass: string;
+  region: string;
+  public: boolean;
+  versioning: boolean;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface UserData {
   user: User;
   balance: number;
-  servers: Server[];
   tickets: Ticket[];
 }

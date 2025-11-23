@@ -1,164 +1,177 @@
-import { prisma } from '../../prisma/client';
+import type { StorageBucket, User } from '@prisma/client';
 
-// Утилита для добавления дней к дате
+import { prisma } from '../../prisma/client';
+import { createNotification } from '../notification/notification.controller';
+import { logger } from '../../utils/logger';
+
+const BILLING_INTERVAL_DAYS = 30;
+const GRACE_RETRY_DAYS = 1;
+
 function addDays(date: Date, days: number): Date {
-  const result = new Date(date);
-  result.setDate(result.getDate() + days);
-  return result;
+  const clone = new Date(date);
+  clone.setDate(clone.getDate() + days);
+  return clone;
 }
 
-export class PaymentService {
+type BucketWithUser = StorageBucket & { user: User };
+
+class PaymentService {
   /**
-   * Обработка автоматических платежей за серверы
-   * Запускается по расписанию каждые 6 часов
+   * Обрабатываем автоматические платежи за S3 бакеты.
+   * Ставим cron на запуск раз в 6 часов.
    */
-  async processAutoPayments() {
+  async processAutoPayments(): Promise<void> {
     const now = new Date();
-    
-    // Находим серверы, у которых пришло время оплаты
-    const serversDue = await prisma.server.findMany({
+    const buckets = await prisma.storageBucket.findMany({
       where: {
-        status: { in: ['running', 'stopped'] },
         autoRenew: true,
-        nextPaymentDate: {
-          lte: now
-        }
+        nextBillingDate: { lte: now },
+        status: { in: ['active', 'grace'] }
       },
-      include: {
-        user: true,
-        tariff: true
-      }
+      include: { user: true }
     });
 
-    console.log(`[Payment Service] Найдено серверов для оплаты: ${serversDue.length}`);
-
-    for (const server of serversDue) {
-      try {
-        await this.chargeServerPayment(server);
-      } catch (error) {
-        console.error(`[Payment Service] Ошибка при списании за сервер ${server.id}:`, error);
-      }
-    }
-  }
-
-  /**
-   * Списание оплаты за конкретный сервер
-   */
-  async chargeServerPayment(server: any) {
-    const amount = server.tariff.price;
-    const user = server.user;
-
-    // Проверяем достаточно ли средств
-    if (user.balance < amount) {
-      console.log(`[Payment Service] Недостаточно средств у пользователя ${user.id} для сервера ${server.id}`);
-      
-      // Создаём запись о неудачном платеже
-      await prisma.payment.create({
-        data: {
-          userId: user.id,
-          serverId: server.id,
-          amount,
-          status: 'failed',
-          type: 'subscription',
-          processedAt: new Date()
-        }
-      });
-
-      // Отправляем уведомление
-      await prisma.notification.create({
-        data: {
-          userId: user.id,
-          title: 'Недостаточно средств',
-          message: `Не удалось списать ${amount}₽ за сервер #${server.id}. Пополните баланс, иначе сервер будет приостановлен.`
-        }
-      });
-
-      // Приостанавливаем сервер через 3 дня неоплаты
-      const daysSincePaymentDue = Math.floor((new Date().getTime() - server.nextPaymentDate.getTime()) / (1000 * 60 * 60 * 24));
-      if (daysSincePaymentDue >= 3) {
-        await prisma.server.update({
-          where: { id: server.id },
-          data: { status: 'suspended' }
-        });
-
-        await prisma.notification.create({
-          data: {
-            userId: user.id,
-            title: 'Сервер приостановлен',
-            message: `Сервер #${server.id} приостановлен из-за неоплаты.`
-          }
-        });
-      }
-
+    if (buckets.length === 0) {
+      logger.debug('[Payment Service] Нет бакетов для списания.');
       return;
     }
 
-    // Списываем средства
-    const balanceBefore = user.balance;
-    const balanceAfter = balanceBefore - amount;
+    logger.info(`[Payment Service] Найдено бакетов для списания: ${buckets.length}`);
 
-    await prisma.$transaction([
-      // Обновляем баланс
-      prisma.user.update({
-        where: { id: user.id },
-        data: { balance: balanceAfter }
-      }),
+    for (const bucket of buckets) {
+      try {
+        await this.chargeBucket(bucket);
+      } catch (error) {
+        logger.error(`[Payment Service] Ошибка списания за бакет ${bucket.id}`, error);
+      }
+    }
+  }
 
-      // Создаём запись о платеже
-      prisma.payment.create({
-        data: {
-          userId: user.id,
-          serverId: server.id,
-          amount,
-          status: 'success',
-          type: 'subscription',
-          processedAt: new Date()
-        }
-      }),
-
-      // Записываем транзакцию
-      prisma.transaction.create({
-        data: {
-          userId: user.id,
-          amount: -amount,
-          type: 'withdrawal',
-          description: `Оплата сервера #${server.id} за месяц`,
-          balanceBefore,
-          balanceAfter
-        }
-      }),
-
-      // Обновляем дату следующего платежа (через 30 дней)
-      prisma.server.update({
-        where: { id: server.id },
-        data: {
-          nextPaymentDate: addDays(new Date(), 30)
-        }
-      })
-    ]);
-
-    console.log(`[Payment Service] Успешно списано ${amount}₽ с пользователя ${user.id} за сервер ${server.id}`);
-
-    // Отправляем уведомление
-    await prisma.notification.create({
+  /**
+   * Устанавливает дату первого списания (через 30 дней) для только что созданного ресурса.
+   */
+  async setInitialPaymentDate(bucketId: number): Promise<void> {
+    await prisma.storageBucket.update({
+      where: { id: bucketId },
       data: {
-        userId: user.id,
-        title: 'Списание за сервер',
-        message: `Списано ${amount}₽ за сервер #${server.id}. Следующая оплата: ${addDays(new Date(), 30).toLocaleDateString('ru-RU')}`
+        nextBillingDate: addDays(new Date(), BILLING_INTERVAL_DAYS)
       }
     });
   }
 
-  /**
-   * Устанавливаем дату первого платежа при создании сервера
-   */
-  async setInitialPaymentDate(serverId: number) {
-    await prisma.server.update({
-      where: { id: serverId },
+  private async chargeBucket(bucket: BucketWithUser): Promise<void> {
+    const now = new Date();
+
+    if (bucket.user.balance < bucket.monthlyPrice) {
+      await this.handleInsufficientFunds(bucket, now);
+      return;
+    }
+
+    const { bucket: updatedBucket, balanceBefore, balanceAfter } = await prisma.$transaction(async (tx) => {
+      const user = await tx.user.findUnique({ where: { id: bucket.userId } });
+      if (!user) throw new Error('Пользователь не найден');
+
+      if (user.balance < bucket.monthlyPrice) {
+        // Баланс мог измениться между выборкой и транзакцией
+        return { bucket, balanceBefore: user.balance, balanceAfter: user.balance };
+      }
+
+      const newBalance = user.balance - bucket.monthlyPrice;
+
+      await tx.user.update({
+        where: { id: user.id },
+        data: { balance: newBalance }
+      });
+
+      await tx.transaction.create({
+        data: {
+          userId: bucket.userId,
+          amount: -bucket.monthlyPrice,
+          type: 'withdrawal',
+          description: `Ежемесячная оплата бакета «${bucket.name}»`,
+          balanceBefore: user.balance,
+          balanceAfter: newBalance
+        }
+      });
+
+      const nextBilling = addDays(now, BILLING_INTERVAL_DAYS);
+
+      const updated = await tx.storageBucket.update({
+        where: { id: bucket.id },
+        data: {
+          status: 'active',
+          lastBilledAt: now,
+          nextBillingDate: nextBilling,
+          autoRenew: true
+        }
+      });
+
+      return { bucket: updated, balanceBefore: user.balance, balanceAfter: newBalance };
+    });
+
+    if (balanceBefore === balanceAfter) {
+      // Значит баланс поменялся внутри транзакции, пересоздадим попытку в следующий цикл
+      await this.handleInsufficientFunds(bucket, now);
+      return;
+    }
+
+    await createNotification({
+      userId: bucket.userId,
+      type: 'storage_payment_charged',
+      title: 'Оплата S3 хранилища',
+      message: `Списано ₽${bucket.monthlyPrice.toFixed(2)} за бакет «${bucket.name}». Следующее списание ${updatedBucket.nextBillingDate ? new Date(updatedBucket.nextBillingDate).toLocaleDateString('ru-RU') : '—'}`,
+      color: 'blue'
+    });
+
+    logger.info(`[Payment Service] Успешное списание ₽${bucket.monthlyPrice} за бакет ${bucket.name}; баланс ${balanceAfter}`);
+  }
+
+  private async handleInsufficientFunds(bucket: BucketWithUser, now: Date): Promise<void> {
+    if (bucket.status === 'suspended') {
+      return;
+    }
+
+    if (bucket.status === 'grace') {
+      await prisma.storageBucket.update({
+        where: { id: bucket.id },
+        data: {
+          status: 'suspended',
+          autoRenew: false,
+          nextBillingDate: null
+        }
+      });
+
+      await createNotification({
+        userId: bucket.userId,
+        type: 'storage_payment_failed',
+        title: 'S3 бакет приостановлен',
+        message: `Не удалось списать ₽${bucket.monthlyPrice.toFixed(2)} за бакет «${bucket.name}». Автопродление отключено.` ,
+        color: 'red'
+      });
+
+      logger.warn(`[Payment Service] Бакет ${bucket.name} приостановлен из-за нехватки средств.`);
+      return;
+    }
+
+    // Переводим в grace и пробуем снова через день
+    const retryDate = addDays(now, GRACE_RETRY_DAYS);
+    await prisma.storageBucket.update({
+      where: { id: bucket.id },
       data: {
-        nextPaymentDate: addDays(new Date(), 30)
+        status: 'grace',
+        nextBillingDate: retryDate
       }
     });
+
+    await createNotification({
+      userId: bucket.userId,
+      type: 'storage_payment_pending',
+      title: 'Недостаточно средств для оплаты S3',
+      message: `На балансе недостаточно средств для оплаты бакета «${bucket.name}». Пополните счёт до ${retryDate.toLocaleDateString('ru-RU')}, иначе бакет будет приостановлен.`,
+      color: 'orange'
+    });
+
+    logger.warn(`[Payment Service] Недостаточно средств для бакета ${bucket.name}, установлен статус grace.`);
   }
 }
 

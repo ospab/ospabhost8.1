@@ -5,7 +5,7 @@ import { Turnstile } from '@marsidev/react-turnstile';
 import type { TurnstileInstance } from '@marsidev/react-turnstile';
 import useAuth from '../context/useAuth';
 import { API_URL } from '../config/api';
-import { useToast } from '../components/Toast';
+import { useToast } from '../hooks/useToast';
 
 const RegisterPage = () => {
   const { addToast } = useToast();

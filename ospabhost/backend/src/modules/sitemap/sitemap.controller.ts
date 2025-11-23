@@ -27,7 +27,7 @@ export async function generateSitemap(req: Request, res: Response) {
       //   lastmod: post.updatedAt.toISOString().split('T')[0]
       // }));
     } catch (error) {
-      console.log('Блог пока не активирован');
+      // Блог пока не активирован
     }
 
     const allPages = [...staticPages, ...dynamicPages];

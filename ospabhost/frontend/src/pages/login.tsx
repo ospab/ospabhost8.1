@@ -5,8 +5,10 @@ import useAuth from '../context/useAuth';
 import { Turnstile } from '@marsidev/react-turnstile';
 import type { TurnstileInstance } from '@marsidev/react-turnstile';
 import { API_URL } from '../config/api';
+import QRLogin from '../components/QRLogin';
 
 const LoginPage = () => {
+  const [loginMethod, setLoginMethod] = useState<'password' | 'qr'>('password');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
@@ -87,52 +89,85 @@ const LoginPage = () => {
     <div className="min-h-screen bg-gray-50 flex items-center justify-center p-4">
       <div className="bg-white p-8 md:p-10 rounded-3xl shadow-2xl w-full max-w-md text-center">
         <h1 className="text-3xl font-bold text-gray-800 mb-6">Вход в аккаунт</h1>
-        <form onSubmit={handleLogin}>
-          <input
-            type="email"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            placeholder="Электронная почта"
-            className="w-full px-5 py-3 mb-4 border border-gray-300 rounded-full focus:outline-none focus:ring-2 focus:ring-ospab-primary"
-            required
-            disabled={isLoading}
-          />
-          <input
-            type="password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            placeholder="Пароль"
-            className="w-full px-5 py-3 mb-6 border border-gray-300 rounded-full focus:outline-none focus:ring-2 focus:ring-ospab-primary"
-            required
-            disabled={isLoading}
-          />
-          
-          {/* Cloudflare Turnstile Captcha */}
-          <div className="mb-6 flex justify-center">
-            <Turnstile
-              ref={turnstileRef}
-              siteKey={siteKey}
-              onSuccess={(token: string) => setTurnstileToken(token)}
-              onError={() => {
-                setTurnstileToken(null);
-                setError('Ошибка загрузки капчи. Попробуйте обновить страницу.');
-              }}
-              onExpire={() => setTurnstileToken(null)}
-            />
-          </div>
-
+        
+        {/* Переключатель метода входа */}
+        <div className="flex mb-6 bg-gray-100 rounded-full p-1">
           <button
-            type="submit"
-            disabled={isLoading || !turnstileToken}
-            className="w-full px-5 py-3 rounded-full text-white font-bold transition-colors transform hover:scale-105 bg-ospab-primary hover:bg-ospab-accent disabled:opacity-50 disabled:cursor-not-allowed"
+            type="button"
+            onClick={() => setLoginMethod('password')}
+            className={`flex-1 py-2 px-4 rounded-full text-sm font-medium transition-colors ${
+              loginMethod === 'password'
+                ? 'bg-white text-gray-900 shadow'
+                : 'text-gray-600 hover:text-gray-900'
+            }`}
           >
-            {isLoading ? 'Входим...' : 'Войти'}
+            Пароль
           </button>
-        </form>
-        {error && (
-          <div className="mt-4 p-3 bg-red-50 border border-red-200 rounded-lg">
-            <p className="text-sm text-red-600">{error}</p>
-          </div>
+          <button
+            type="button"
+            onClick={() => setLoginMethod('qr')}
+            className={`flex-1 py-2 px-4 rounded-full text-sm font-medium transition-colors ${
+              loginMethod === 'qr'
+                ? 'bg-white text-gray-900 shadow'
+                : 'text-gray-600 hover:text-gray-900'
+            }`}
+          >
+            QR-код
+          </button>
+        </div>
+
+        {loginMethod === 'password' ? (
+          <>
+            <form onSubmit={handleLogin}>
+              <input
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder="Электронная почта"
+                className="w-full px-5 py-3 mb-4 border border-gray-300 rounded-full focus:outline-none focus:ring-2 focus:ring-ospab-primary"
+                required
+                disabled={isLoading}
+              />
+              <input
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder="Пароль"
+                className="w-full px-5 py-3 mb-6 border border-gray-300 rounded-full focus:outline-none focus:ring-2 focus:ring-ospab-primary"
+                required
+                disabled={isLoading}
+              />
+              
+              {/* Cloudflare Turnstile Captcha */}
+              <div className="mb-6 flex justify-center">
+                <Turnstile
+                  ref={turnstileRef}
+                  siteKey={siteKey}
+                  onSuccess={(token: string) => setTurnstileToken(token)}
+                  onError={() => {
+                    setTurnstileToken(null);
+                    setError('Ошибка загрузки капчи. Попробуйте обновить страницу.');
+                  }}
+                  onExpire={() => setTurnstileToken(null)}
+                />
+              </div>
+
+              <button
+                type="submit"
+                disabled={isLoading || !turnstileToken}
+                className="w-full px-5 py-3 rounded-full text-white font-bold transition-colors transform hover:scale-105 bg-ospab-primary hover:bg-ospab-accent disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {isLoading ? 'Входим...' : 'Войти'}
+              </button>
+            </form>
+            {error && (
+              <div className="mt-4 p-3 bg-red-50 border border-red-200 rounded-lg">
+                <p className="text-sm text-red-600">{error}</p>
+              </div>
+            )}
+          </>
+        ) : (
+          <QRLogin onSuccess={() => navigate('/dashboard')} />
         )}
 
         {/* Социальные сети */}

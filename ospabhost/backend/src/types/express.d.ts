@@ -1,17 +1,10 @@
 // Типы для расширения Express Request
-import { User } from '@prisma/client';
+import { User as PrismaUser } from '@prisma/client';
 
 declare global {
   namespace Express {
-    interface User {
-      id: number;
-      email: string;
-      username: string;
-      password: string;
-      balance: number;
-      operator: number;
-      createdAt: Date;
-    }
+    // Используем полный тип User из Prisma
+    interface User extends PrismaUser {}
 
     interface Request {
       user?: User;

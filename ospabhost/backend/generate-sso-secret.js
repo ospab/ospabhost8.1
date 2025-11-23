@@ -24,5 +24,5 @@ console.log('2. Добавьте в ospabhost8.1/backend/.env:');
 console.log(`   SSO_SECRET_KEY=${ssoSecret}`);
 console.log('\n3. Добавьте ЭТОТ ЖЕ ключ в панель управления (ospab-panel/.env):');
 console.log(`   SSO_SECRET_KEY=${ssoSecret}`);
-console.log('\n⚠️  ВАЖНО: Ключ должен быть ОДИНАКОВЫМ на обоих сайтах!');
+console.log('\nВАЖНО: Ключ должен быть ОДИНАКОВЫМ на обоих сайтах!');
 console.log('═══════════════════════════════════════════════════════════════\n');

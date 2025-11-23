@@ -3,6 +3,7 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { PrismaClient } from '@prisma/client';
 import { validateTurnstileToken } from './turnstile.validator';
+import { logger } from '../../utils/logger';
 
 const prisma = new PrismaClient();
 const JWT_SECRET = process.env.JWT_SECRET || 'your_super_secret_key';
@@ -46,7 +47,7 @@ export const register = async (req: Request, res: Response) => {
     res.status(201).json({ message: 'Регистрация прошла успешно!' });
 
   } catch (error) {
-    console.error('Ошибка при регистрации:', error);
+    logger.error('Ошибка при регистрации:', error);
     res.status(500).json({ message: 'Ошибка сервера.' });
   }
 };
@@ -87,7 +88,7 @@ export const login = async (req: Request, res: Response) => {
     res.status(200).json({ token });
 
   } catch (error) {
-    console.error('Ошибка при входе:', error);
+    logger.error('Ошибка при входе:', error);
     res.status(500).json({ message: 'Ошибка сервера.' });
   }
 };
@@ -108,38 +109,33 @@ export const getMe = async (req: Request, res: Response) => {
         operator: true,
         isAdmin: true,
         balance: true,
-        servers: {
+        buckets: {
+          orderBy: { createdAt: 'desc' },
           select: {
             id: true,
-            status: true,
+            name: true,
+            plan: true,
+            quotaGb: true,
+            usedBytes: true,
+            objectCount: true,
+            storageClass: true,
+            region: true,
+            public: true,
+            versioning: true,
             createdAt: true,
-            ipAddress: true,
-            nextPaymentDate: true,
-            autoRenew: true,
-            tariff: {
-              select: {
-                name: true,
-                price: true,
-              },
-            },
-            os: {
-              select: {
-                name: true,
-                type: true,
-              },
-            },
-          },
+            updatedAt: true
+          }
         },
         tickets: true,
       },
     });
-    console.log('API /api/auth/me user:', user);
+    logger.debug('API /api/auth/me user:', user);
     if (!user) {
-      return res.status(404).json({ message: 'Пользователь не найден.' });
+      return res.status(401).json({ message: 'Сессия недействительна. Выполните вход заново.' });
     }
     res.status(200).json({ user });
   } catch (error) {
-    console.error('Ошибка при получении данных пользователя:', error);
-    res.status(500).json({ message: 'Ошибка сервера.' });
+    logger.error('Ошибка при получении данных пользователя:', error);
+    res.status(503).json({ message: 'Не удалось загрузить профиль. Попробуйте позже.' });
   }
 };

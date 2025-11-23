@@ -7,8 +7,11 @@ interface PrivateRouteProps {
 }
 
 const PrivateRoute: React.FC<PrivateRouteProps> = ({ children }) => {
-  const { isLoggedIn } = useAuth();
+  const { isLoggedIn, isInitialized } = useAuth();
   const location = useLocation();
+  if (!isInitialized) {
+    return null;
+  }
   return isLoggedIn ? children : <Navigate to="/login" replace state={{ from: location }} />;
 };
 

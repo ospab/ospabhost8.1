@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { uploadCheck, getChecks, approveCheck, rejectCheck } from './check.controller';
+import { uploadCheck, getChecks, approveCheck, rejectCheck, getUserChecks, viewCheck, getCheckFile } from './check.controller';
 import { authMiddleware } from '../auth/auth.middleware';
 import multer, { MulterError } from 'multer';
 import path from 'path';
@@ -48,7 +48,10 @@ const upload = multer({
 router.use(authMiddleware);
 
 router.post('/upload', upload.single('file'), uploadCheck);
-router.get('/', getChecks);
+router.get('/', getChecks); // Для операторов - все чеки
+router.get('/my', getUserChecks); // Для пользователей - свои чеки
+router.get('/file/:filename', getCheckFile); // Получение файла чека с авторизацией
+router.get('/:id', viewCheck); // Просмотр конкретного чека
 router.post('/approve', approveCheck);
 router.post('/reject', rejectCheck);
 

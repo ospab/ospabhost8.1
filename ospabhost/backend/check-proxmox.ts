@@ -30,16 +30,16 @@ async function checkProxmox() {
     console.log('---');
 
     // 1. Проверка версии
-    console.log('\n1️⃣ Проверка версии Proxmox...');
+    console.log('\n[1] Проверка версии Proxmox...');
     const versionRes = await axios.get(`${PROXMOX_API_URL}/version`, {
       headers: getProxmoxHeaders(),
       timeout: 10000,
       httpsAgent
     });
-    console.log('✅ Версия:', versionRes.data?.data?.version);
+    console.log('[OK] Версия:', versionRes.data?.data?.version);
 
     // 2. Проверка storage
-    console.log('\n2️⃣ Получение списка storage на узле ' + PROXMOX_NODE + '...');
+    console.log('\n[2] Получение списка storage на узле ' + PROXMOX_NODE + '...');
     const storageRes = await axios.get(
       `${PROXMOX_API_URL}/nodes/${PROXMOX_NODE}/storage`,
       {
@@ -50,14 +50,14 @@ async function checkProxmox() {
     );
     
     if (storageRes.data?.data) {
-      console.log('✅ Доступные storage:');
+      console.log('[OK] Доступные storage:');
       storageRes.data.data.forEach((storage: any) => {
         console.log(`   - ${storage.storage} (type: ${storage.type}, enabled: ${storage.enabled ? 'да' : 'нет'})`);
       });
     }
 
     // 3. Проверка контейнеров
-    console.log('\n3️⃣ Получение списка контейнеров...');
+    console.log('\n[3] Получение списка контейнеров...');
     const containersRes = await axios.get(
       `${PROXMOX_API_URL}/nodes/${PROXMOX_NODE}/lxc`,
       {
@@ -68,24 +68,24 @@ async function checkProxmox() {
     );
 
     if (containersRes.data?.data) {
-      console.log(`✅ Найдено контейнеров: ${containersRes.data.data.length}`);
+      console.log(`[OK] Найдено контейнеров: ${containersRes.data.data.length}`);
       containersRes.data.data.slice(0, 3).forEach((ct: any) => {
         console.log(`   - VMID ${ct.vmid}: ${ct.name} (${ct.status})`);
       });
     }
 
     // 4. Проверка VMID
-    console.log('\n4️⃣ Получение следующего VMID...');
+    console.log('\n[4] Получение следующего VMID...');
     const vmidRes = await axios.get(`${PROXMOX_API_URL}/cluster/nextid`, {
       headers: getProxmoxHeaders(),
       timeout: 10000,
       httpsAgent
     });
-    console.log('✅ Следующий VMID:', vmidRes.data?.data);
+    console.log('[OK] Следующий VMID:', vmidRes.data?.data);
 
-    console.log('\n✅ Все проверки пройдены успешно!');
+    console.log('\n[SUCCESS] Все проверки пройдены успешно!');
   } catch (error: any) {
-    console.error('\n❌ Ошибка:', error.message);
+    console.error('\n[ERROR] Ошибка:', error.message);
     console.error('Code:', error.code);
     console.error('Status:', error.response?.status);
     if (error.response?.data?.errors) {

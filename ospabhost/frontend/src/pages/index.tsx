@@ -1,5 +1,5 @@
 import { Link } from 'react-router-dom';
-import { FaServer, FaCloud, FaShieldAlt } from 'react-icons/fa';
+import { FaCloud, FaShieldAlt, FaDatabase } from 'react-icons/fa';
 
 const HomePage = () => {
   return (
@@ -8,10 +8,10 @@ const HomePage = () => {
       <section className="relative bg-gradient-to-b from-blue-100 to-white pt-24 pb-32">
         <div className="container mx-auto text-center px-4">
           <h1 className="text-5xl md:text-6xl font-extrabold leading-tight tracking-tighter text-gray-900">
-            Масштабируемый хостинг <br /> для ваших идей
+            Облачное хранилище <br /> для ваших данных
           </h1>
           <p className="mt-6 text-lg md:text-xl max-w-2xl mx-auto text-gray-700">
-            Запускайте, масштабируйте и управляйте своими проектами с надёжной и высокопроизводительной инфраструктурой.
+            S3-совместимое хранилище с высокой доступностью и надежностью. Храните файлы, резервные копии и медиа-контент.
           </p>
           <div className="mt-10 flex flex-col sm:flex-row justify-center space-y-4 sm:space-y-0 sm:space-x-4">
             <Link
@@ -37,11 +37,11 @@ const HomePage = () => {
           <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
             <div className="bg-white p-8 rounded-2xl shadow-xl hover:shadow-2xl transition-shadow duration-300 transform hover:scale-105">
               <div className="flex justify-center mb-4">
-                <FaServer className="text-5xl text-blue-500" />
+                <FaDatabase className="text-5xl text-blue-500" />
               </div>
-              <h3 className="text-2xl font-bold text-center text-gray-900">Высокая производительность</h3>
+              <h3 className="text-2xl font-bold text-center text-gray-900">S3 API</h3>
               <p className="mt-2 text-center text-gray-700">
-                Оптимизированные серверы для максимальной скорости загрузки вашего сайта.
+                Полная совместимость с Amazon S3 API. Используйте привычные инструменты и SDK.
               </p>
             </div>
             <div className="bg-white p-8 rounded-2xl shadow-xl hover:shadow-2xl transition-shadow duration-300 transform hover:scale-105">
@@ -50,7 +50,7 @@ const HomePage = () => {
               </div>
               <h3 className="text-2xl font-bold text-center text-gray-900">Масштабируемость</h3>
               <p className="mt-2 text-center text-gray-700">
-                Легко увеличивайте или уменьшайте ресурсы по мере роста вашего проекта.
+                Неограниченное хранилище. Платите только за используемое пространство.
               </p>
             </div>
             <div className="bg-white p-8 rounded-2xl shadow-xl hover:shadow-2xl transition-shadow duration-300 transform hover:scale-105">
@@ -59,7 +59,7 @@ const HomePage = () => {
               </div>
               <h3 className="text-2xl font-bold text-center text-gray-900">Надежность и безопасность</h3>
               <p className="mt-2 text-center text-gray-700">
-                Ваши данные и приложения всегда под надёжной защитой.
+                Шифрование данных, резервное копирование и высокая доступность 99.9%.
               </p>
             </div>
           </div>
@@ -72,7 +72,7 @@ const HomePage = () => {
           Готовы начать?
         </h2>
         <p className="mt-4 text-lg md:text-xl max-w-2xl mx-auto text-gray-400">
-          Присоединяйтесь к тысячам разработчиков, которые доверяют нам.
+          Присоединяйтесь к разработчикам, которые доверяют нам свои данные.
         </p>
         <div className="mt-8">
           <Link

@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import axios from 'axios';
+import apiClient from '../../utils/apiClient';
 
 interface Response {
   id: number;
@@ -31,16 +31,9 @@ const TicketResponse: React.FC = () => {
   const fetchTickets = async () => {
     setError('');
     try {
-  const token = localStorage.getItem('access_token');
-  const res = await axios.get('https://ospab.host:5000/api/ticket', {
-        withCredentials: true,
-  headers: token ? { Authorization: `Bearer ${token}` } : {}
-      });
-      if (Array.isArray(res.data)) {
-        setTickets(res.data);
-      } else {
-        setTickets([]);
-      }
+      const res = await apiClient.get('/api/ticket');
+      const data = Array.isArray(res.data) ? res.data : res.data?.tickets;
+      setTickets(data || []);
     } catch {
       setError('Ошибка загрузки тикетов');
       setTickets([]);
@@ -51,13 +44,9 @@ const TicketResponse: React.FC = () => {
     setLoading(true);
     setError('');
     try {
-  const token = localStorage.getItem('access_token');
-  await axios.post('https://ospab.host:5000/api/ticket/respond', {
+      await apiClient.post('/api/ticket/respond', {
         ticketId,
         message: responseMsg[ticketId]
-      }, {
-        withCredentials: true,
-  headers: token ? { Authorization: `Bearer ${token}` } : {}
       });
       setResponseMsg(prev => ({ ...prev, [ticketId]: '' }));
       fetchTickets();
@@ -73,11 +62,7 @@ const TicketResponse: React.FC = () => {
     setLoading(true);
     setError('');
     try {
-  const token = localStorage.getItem('access_token');
-  await axios.post('https://ospab.host:5000/api/ticket/close', { ticketId }, {
-        withCredentials: true,
-  headers: token ? { Authorization: `Bearer ${token}` } : {}
-      });
+      await apiClient.post('/api/ticket/close', { ticketId });
       fetchTickets();
     } catch {
       setError('Ошибка закрытия тикета');

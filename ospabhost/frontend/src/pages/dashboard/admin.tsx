@@ -1,8 +1,31 @@
 import { useState, useEffect, useCallback } from 'react';
 import axios from 'axios';
 import { API_URL } from '../../config/api';
-import { useToast } from '../../components/Toast';
+import { useToast } from '../../hooks/useToast';
 import { showConfirm, showPrompt } from '../../components/modalHelpers';
+
+interface Server {
+  id: number;
+  name: string;
+  status: string;
+  vmid: number;
+  ipAddress: string | null;
+  nextPaymentDate: string | null;
+  tariff: {
+    name: string;
+  };
+  os: {
+    name: string;
+  };
+}
+
+interface Transaction {
+  id: number;
+  type: string;
+  amount: number;
+  description: string;
+  createdAt: string;
+}
 
 interface User {
   id: number;
@@ -18,22 +41,28 @@ interface User {
   };
 }
 
+interface UserDetails extends User {
+  servers: Server[];
+  transactions: Transaction[];
+}
+
 interface Statistics {
   users: { total: number };
   servers: { total: number; active: number; suspended: number };
   balance: { total: number };
   checks: { pending: number };
   tickets: { open: number };
-  recentTransactions: any[];
+  recentTransactions: Transaction[];
 }
 
 const AdminPanel = () => {
   const { addToast } = useToast();
   const [users, setUsers] = useState<User[]>([]);
   const [statistics, setStatistics] = useState<Statistics | null>(null);
-  const [selectedUser, setSelectedUser] = useState<any>(null);
+  const [selectedUser, setSelectedUser] = useState<UserDetails | null>(null);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<'users' | 'stats'>('stats');
+  const [testingPush, setTestingPush] = useState(false);
 
   // Модальные окна
   const [showBalanceModal, setShowBalanceModal] = useState(false);
@@ -54,10 +83,13 @@ const AdminPanel = () => {
 
       setUsers(usersRes.data.data);
       setStatistics(statsRes.data.data);
-    } catch (error: any) {
+    } catch (error) {
       console.error('Ошибка загрузки данных админки:', error);
-      if (error.response?.status === 403) {
-        addToast('У вас нет прав администратора', 'error');
+      if (error && typeof error === 'object' && 'response' in error) {
+        const axiosError = error as { response?: { status?: number } };
+        if (axiosError.response?.status === 403) {
+          addToast('У вас нет прав администратора', 'error');
+        }
       }
     } finally {
       setLoading(false);
@@ -148,6 +180,140 @@ const AdminPanel = () => {
     }
   };
 
+  const handleTestPushNotification = async () => {
+    console.log('🧪 [FRONTEND] Начинаем тестовую отправку Push-уведомления...');
+    setTestingPush(true);
+    
+    try {
+      const token = localStorage.getItem('access_token');
+      console.log('📝 [FRONTEND] Токен найден:', token ? 'Да' : 'Нет');
+      
+      if (!token) {
+        addToast('Токен не найден. Пожалуйста, войдите снова.', 'error');
+        return;
+      }
+      
+      // Проверяем разрешения
+      console.log('🔍 [FRONTEND] Проверяем разрешения на уведомления...');
+      console.log('  Notification.permission:', Notification.permission);
+      
+      if (Notification.permission !== 'granted') {
+        addToast('⚠️ Уведомления не разрешены! Включите их на странице "Уведомления"', 'error');
+        console.log('❌ [FRONTEND] Уведомления не разрешены');
+        return;
+      }
+      
+      // Проверяем Service Worker
+      console.log('🔍 [FRONTEND] Проверяем Service Worker...');
+      const registration = await navigator.serviceWorker.ready;
+      console.log('  ✅ Service Worker готов:', registration);
+      
+      // Проверяем Push подписку
+      console.log('🔍 [FRONTEND] Проверяем Push подписку...');
+      const subscription = await registration.pushManager.getSubscription();
+      if (subscription) {
+        console.log('  ✅ Push подписка найдена:', subscription.endpoint.substring(0, 50) + '...');
+      } else {
+        console.log('  ❌ Push подписка НЕ найдена');
+        addToast('❌ Push подписка не найдена! Включите уведомления заново.', 'error');
+        return;
+      }
+      
+      const headers = { Authorization: `Bearer ${token}` };
+      
+      console.log('📤 [FRONTEND] Отправляем запрос на:', `${API_URL}/api/notifications/test-push`);
+      
+      const response = await axios.post(
+        `${API_URL}/api/notifications/test-push`,
+        {},
+        { headers }
+      );
+      
+      console.log('✅ [FRONTEND] Ответ от сервера:', response.data);
+      
+      if (response.data.success) {
+        addToast('✅ Тестовое уведомление отправлено! Ждите системное уведомление в углу экрана.', 'success');
+        
+        console.log('💡 [FRONTEND] ВАЖНО: Уведомление должно появиться как СИСТЕМНОЕ уведомление');
+        console.log('   Windows: правый нижний угол экрана (Action Center)');
+        console.log('   macOS: правый верхний угол');
+        console.log('   Это НЕ уведомление на сайте, а уведомление браузера/ОС!');
+        
+        
+        if (response.data.data) {
+          console.log('📊 [FRONTEND] Детали:', {
+            notificationId: response.data.data.notificationId,
+            subscriptionsCount: response.data.data.subscriptionsCount
+          });
+        }
+      } else {
+        addToast(`❌ ${response.data.message}`, 'error');
+      }
+      
+    } catch (error) {
+      console.error('❌ [FRONTEND] Ошибка отправки тестового уведомления:', error);
+      
+      if (axios.isAxiosError(error)) {
+        console.error('📋 [FRONTEND] Детали ошибки Axios:', {
+          status: error.response?.status,
+          statusText: error.response?.statusText,
+          data: error.response?.data,
+          url: error.config?.url
+        });
+        
+        const errorMessage = error.response?.data?.message || error.message;
+        addToast(`Ошибка: ${errorMessage}`, 'error');
+        
+        if (error.response?.status === 403) {
+          console.log('⚠️ [FRONTEND] 403 Forbidden - проверьте права администратора');
+        } else if (error.response?.status === 400) {
+          console.log('⚠️ [FRONTEND] 400 Bad Request - возможно, нет активных подписок');
+        }
+      } else {
+        addToast('Ошибка отправки тестового уведомления', 'error');
+      }
+    } finally {
+      setTestingPush(false);
+    }
+  };
+
+  const handleTestLocalNotification = () => {
+    console.log('🔔 [FRONTEND] Тестируем локальное уведомление (без сервера)...');
+    
+    if (Notification.permission !== 'granted') {
+      addToast('⚠️ Уведомления не разрешены!', 'error');
+      console.log('❌ [FRONTEND] Notification.permission:', Notification.permission);
+      return;
+    }
+    
+    try {
+      const notification = new Notification('🔔 Локальный тест', {
+        body: 'Если вы видите это уведомление, значит браузер и ОС настроены правильно!',
+        icon: '/logo192.png',
+        badge: '/favicon.svg',
+        tag: 'local-test',
+        requireInteraction: false
+      });
+      
+      console.log('✅ [FRONTEND] Локальное уведомление создано:', notification);
+      addToast('✅ Локальное уведомление отправлено!', 'success');
+      
+      notification.onclick = () => {
+        console.log('🖱️ [FRONTEND] Клик по локальному уведомлению');
+        window.focus();
+        notification.close();
+      };
+      
+      setTimeout(() => {
+        notification.close();
+      }, 5000);
+      
+    } catch (error) {
+      console.error('❌ [FRONTEND] Ошибка локального уведомления:', error);
+      addToast('Ошибка создания уведомления', 'error');
+    }
+  };
+
   if (loading) {
     return (
       <div className="flex justify-center items-center h-screen">
@@ -158,7 +324,40 @@ const AdminPanel = () => {
 
   return (
     <div className="container mx-auto px-4 py-8">
-      <h1 className="text-3xl font-bold mb-8">Админ-панель</h1>
+      <div className="flex justify-between items-center mb-8">
+        <h1 className="text-3xl font-bold">Админ-панель</h1>
+        
+        {/* Кнопки тестовых уведомлений */}
+        <div className="flex gap-3">
+          <button
+            onClick={handleTestLocalNotification}
+            className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 flex items-center gap-2 transition-all"
+            title="Локальный тест (без сервера) - должно появиться сразу в углу экрана"
+          >
+            <span className="text-xl">🔔</span>
+            <span>Локальный тест</span>
+          </button>
+          
+          <button
+            onClick={handleTestPushNotification}
+            disabled={testingPush}
+            className="px-6 py-3 bg-purple-600 text-white rounded-lg hover:bg-purple-700 disabled:bg-gray-400 disabled:cursor-not-allowed flex items-center gap-2 transition-all"
+            title="Push-уведомление через сервер - требует подписку"
+          >
+            {testingPush ? (
+              <>
+                <div className="animate-spin h-5 w-5 border-2 border-white border-t-transparent rounded-full"></div>
+                <span>Отправка...</span>
+              </>
+            ) : (
+              <>
+                <span className="text-xl">🧪</span>
+                <span>Тест Push</span>
+              </>
+            )}
+          </button>
+        </div>
+      </div>
 
       {/* Tabs */}
       <div className="flex gap-4 mb-6 border-b">
@@ -229,7 +428,9 @@ const AdminPanel = () => {
                   <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">{user.balance.toFixed(2)} ₽</td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm">{user._count.servers}</td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm">
-                    {user.isAdmin ? '✅' : '❌'}
+                    <span className={user.isAdmin ? 'text-green-600 font-medium' : 'text-gray-400'}>
+                      {user.isAdmin ? 'Да' : 'Нет'}
+                    </span>
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm space-x-2">
                     <button
@@ -297,7 +498,7 @@ const AdminPanel = () => {
             {/* Servers */}
             <h3 className="text-xl font-bold mb-4">Серверы ({selectedUser.servers.length})</h3>
             <div className="space-y-4 mb-6">
-              {selectedUser.servers.map((server: any) => (
+              {selectedUser.servers.map((server) => (
                 <div key={server.id} className="border p-4 rounded">
                   <div className="flex justify-between items-center">
                     <div>
@@ -326,7 +527,7 @@ const AdminPanel = () => {
             {/* Transactions */}
             <h3 className="text-xl font-bold mb-4">Последние транзакции</h3>
             <div className="space-y-2">
-              {selectedUser.transactions?.slice(0, 10).map((tx: any) => (
+              {selectedUser.transactions?.slice(0, 10).map((tx) => (
                 <div key={tx.id} className="flex justify-between border-b pb-2">
                   <div>
                     <p className="font-medium">{tx.description}</p>

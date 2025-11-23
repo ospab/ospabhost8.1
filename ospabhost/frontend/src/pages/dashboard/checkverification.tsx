@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect } from 'react';
-import axios from 'axios';
+import apiClient from '../../utils/apiClient';
 import { API_URL } from '../../config/api';
 
 interface IUser {
@@ -25,18 +25,48 @@ const CheckVerification: React.FC = () => {
   const [actionLoading, setActionLoading] = useState<number | null>(null);
   const [error, setError] = useState<string>('');
 
+  // Получить защищённый URL для файла чека
+  const getCheckFileUrl = (fileUrl: string): string => {
+    const filename = fileUrl.split('/').pop();
+    return `${API_URL}/api/check/file/${filename}`;
+  };
+
+  // Открыть изображение чека в новом окне с авторизацией
+  const openCheckImage = async (fileUrl: string) => {
+    try {
+      const token = localStorage.getItem('access_token');
+      const url = getCheckFileUrl(fileUrl);
+      
+      const response = await fetch(url, {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
+      
+      if (!response.ok) {
+        throw new Error('Ошибка загрузки изображения');
+      }
+      
+      const blob = await response.blob();
+      const objectUrl = URL.createObjectURL(blob);
+      window.open(objectUrl, '_blank');
+    } catch (error) {
+      console.error('[CheckVerification] Ошибка загрузки изображения:', error);
+      alert('Не удалось загрузить изображение чека');
+    }
+  };
+
   useEffect(() => {
     const fetchChecks = async (): Promise<void> => {
+      console.log('[CheckVerification] Загрузка чеков для проверки...');
       setLoading(true);
       setError('');
       try {
-  const token = localStorage.getItem('access_token');
-        const res = await axios.get<ICheck[]>(`${API_URL}/api/check`, {
-          headers: { Authorization: `Bearer ${token}` },
-          withCredentials: true,
-        });
+        const res = await apiClient.get<ICheck[]>(`${API_URL}/api/check`);
         setChecks(res.data);
-      } catch {
+        console.log('[CheckVerification] Загружено чеков:', res.data.length);
+      } catch (err) {
+        console.error('[CheckVerification] Ошибка загрузки чеков:', err);
         setError('Ошибка загрузки чеков');
         setChecks([]);
       }
@@ -46,35 +76,41 @@ const CheckVerification: React.FC = () => {
   }, []);
 
   const handleAction = async (checkId: number, action: 'approve' | 'reject'): Promise<void> => {
+    console.log(`[CheckVerification] ${action === 'approve' ? 'Подтверждение' : 'Отклонение'} чека #${checkId}`);
     setActionLoading(checkId);
     setError('');
     try {
-  const token = localStorage.getItem('access_token');
-      await axios.post(`${API_URL}/api/check/${action}`, { checkId }, {
-  headers: { Authorization: `Bearer ${token}` },
-        withCredentials: true,
-      });
-      setChecks((prevChecks: ICheck[]) => prevChecks.map((c: ICheck) => c.id === checkId ? { ...c, status: action === 'approve' ? 'approved' : 'rejected' } : c));
+      await apiClient.post(`${API_URL}/api/check/${action}`, { checkId });
+      
+      console.log(`[CheckVerification] Чек #${checkId} ${action === 'approve' ? 'подтверждён' : 'отклонён'}`);
+      
+      setChecks((prevChecks: ICheck[]) => 
+        prevChecks.map((c: ICheck) => 
+          c.id === checkId ? { ...c, status: action === 'approve' ? 'approved' : 'rejected' } : c
+        )
+      );
+      
       // Если подтверждение — обновить баланс пользователя
       if (action === 'approve') {
         try {
-          const token = localStorage.getItem('access_token');
-          const headers = { Authorization: `Bearer ${token}` };
-          const userRes = await axios.get(`${API_URL}/api/auth/me`, { headers });
+          console.log('[CheckVerification] Обновление данных пользователя...');
+          const userRes = await apiClient.get(`${API_URL}/api/auth/me`);
+          
           // Глобально обновить userData через типизированное событие (для Dashboard)
           window.dispatchEvent(new CustomEvent<import('./types').UserData>('userDataUpdate', {
             detail: {
               user: userRes.data.user,
               balance: userRes.data.user.balance ?? 0,
-              servers: userRes.data.user.servers ?? [],
               tickets: userRes.data.user.tickets ?? [],
             }
           }));
+          console.log('[CheckVerification] Данные пользователя обновлены');
         } catch (error) {
-          console.error('Ошибка обновления userData:', error);
+          console.error('[CheckVerification] Ошибка обновления userData:', error);
         }
       }
-    } catch {
+    } catch (err) {
+      console.error(`[CheckVerification] Ошибка ${action === 'approve' ? 'подтверждения' : 'отклонения'}:`, err);
       setError('Ошибка действия');
     }
     setActionLoading(null);
@@ -108,9 +144,16 @@ const CheckVerification: React.FC = () => {
                 </div>
               </div>
               <div className="flex flex-col items-center gap-2 md:ml-8">
-                <a href={`${API_URL}${check.fileUrl}`} target="_blank" rel="noopener noreferrer" className="block mb-2">
-                  <img src={`${API_URL}${check.fileUrl}`} alt="Чек" className="w-32 h-32 object-contain rounded-xl border" />
-                </a>
+                <button
+                  onClick={() => openCheckImage(check.fileUrl)}
+                  className="block mb-2 cursor-pointer hover:opacity-80 transition-opacity"
+                >
+                  <div className="w-32 h-32 flex items-center justify-center bg-gray-200 rounded-xl border">
+                    <span className="text-gray-600 text-sm text-center px-2">
+                      Нажмите для просмотра чека
+                    </span>
+                  </div>
+                </button>
                 {check.status === 'pending' && (
                   <>
                     <button

@@ -1,31 +1,34 @@
 // frontend/src/pages/dashboard/mainpage.tsx
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useContext } from 'react';
 import { Routes, Route, Link, useNavigate, useLocation } from 'react-router-dom';
-import axios from 'axios';
+import { isAxiosError } from 'axios';
+import apiClient from '../../utils/apiClient';
 import AuthContext from '../../context/authcontext';
-import { useContext } from 'react';
 
 // Импортируем компоненты для вкладок
 import Summary from './summary';
-import Servers from './servers';
-import ServerPanel from './serverpanel';
 import TicketsPage from './tickets';
 import Billing from './billing';
 import Settings from './settings';
-import Notifications from './notificatons';
+import NotificationsPage from './notifications';
 import CheckVerification from './checkverification';
 import TicketResponse from './ticketresponse';
 import Checkout from './checkout';
-import TariffsPage from '../tariffs';
+import StoragePage from './storage';
 import AdminPanel from './admin';
+import BlogAdmin from './blogadmin';
+import BlogEditor from './blogeditor';
+
+// Новые компоненты для тикетов
+import TicketDetailPage from './tickets/detail';
+import NewTicketPage from './tickets/new';
 
 const Dashboard = () => {
-  const [userData, setUserData] = useState<import('./types').UserData | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState<boolean>(false);
   const navigate = useNavigate();
   const location = useLocation();
-  const { logout } = useContext(AuthContext);
+  const { userData, setUserData, logout, refreshUser, isInitialized } = useContext(AuthContext);
 
   const [activeTab, setActiveTab] = useState('summary');
 
@@ -46,17 +49,10 @@ const Dashboard = () => {
           navigate('/login');
           return;
         }
-        const headers = { Authorization: `Bearer ${token}` };
-  const userRes = await axios.get('https://ospab.host:5000/api/auth/me', { headers });
-        setUserData({
-          user: userRes.data.user,
-          balance: userRes.data.user.balance ?? 0,
-          servers: userRes.data.user.servers ?? [],
-          tickets: userRes.data.user.tickets ?? [],
-        });
+        await refreshUser();
       } catch (err) {
         console.error('Ошибка загрузки данных:', err);
-        if (axios.isAxiosError(err) && err.response?.status === 401) {
+        if (isAxiosError(err) && err.response?.status === 401) {
           logout();
           navigate('/login');
         }
@@ -72,12 +68,10 @@ const Dashboard = () => {
     try {
       const token = localStorage.getItem('access_token');
       if (!token) return;
-      const headers = { Authorization: `Bearer ${token}` };
-  const userRes = await axios.get('https://ospab.host:5000/api/auth/me', { headers });
+      const userRes = await apiClient.get('/api/auth/me');
       setUserData({
         user: userRes.data.user,
         balance: userRes.data.user.balance ?? 0,
-        servers: userRes.data.user.servers ?? [],
         tickets: userRes.data.user.tickets ?? [],
       });
     } catch (err) {
@@ -102,7 +96,7 @@ const Dashboard = () => {
   const isOperator = userData?.user?.operator === 1;
   const isAdmin = userData?.user?.isAdmin === true;
 
-  if (loading) {
+  if (!isInitialized || loading) {
     return (
       <div className="flex min-h-screen items-center justify-center">
         <span className="text-gray-500 text-lg">Загрузка...</span>
@@ -113,7 +107,7 @@ const Dashboard = () => {
   // Вкладки для сайдбара
   const tabs = [
     { key: 'summary', label: 'Сводка', to: '/dashboard' },
-    { key: 'servers', label: 'Серверы', to: '/dashboard/servers' },
+    { key: 'storage', label: 'Хранилище', to: '/dashboard/storage' },
     { key: 'tickets', label: 'Тикеты', to: '/dashboard/tickets' },
     { key: 'billing', label: 'Баланс', to: '/dashboard/billing' },
     { key: 'settings', label: 'Настройки', to: '/dashboard/settings' },
@@ -125,7 +119,8 @@ const Dashboard = () => {
   ];
   
   const superAdminTabs = [
-    { key: 'admin', label: '👑 Админ-панель', to: '/dashboard/admin' },
+    { key: 'admin', label: 'Админ-панель', to: '/dashboard/admin' },
+    { key: 'blogadmin', label: 'Блог', to: '/dashboard/blogadmin' },
   ];
 
   return (
@@ -163,7 +158,7 @@ const Dashboard = () => {
             )}
             {isAdmin && (
               <span className="inline-block px-2 py-1 bg-red-100 text-red-800 text-xs font-semibold rounded-full">
-                👑 Супер Админ
+                Супер Админ
               </span>
             )}
           </div>
@@ -260,19 +255,21 @@ const Dashboard = () => {
         </div>
         <div className="flex-1 p-4 lg:p-8 pt-6 lg:pt-12 overflow-x-hidden">
           <Routes>
-            <Route path="/" element={<Summary userData={userData ?? { user: { username: '', operator: 0 }, balance: 0, servers: [], tickets: [] }} />} />
-            <Route path="servers" element={<Servers />} />
-            <Route path="server/:id" element={<ServerPanel />} />
-            <Route path="checkout" element={<Checkout onSuccess={() => navigate('/dashboard')} />} />
-            <Route path="tariffs" element={<TariffsPage />} />
+            <Route path="/" element={<Summary userData={userData ?? { user: { username: '', operator: 0 }, balance: 0, tickets: [] }} />} />
+            <Route path="storage" element={<StoragePage />} />
+            <Route path="checkout" element={<Checkout onSuccess={() => navigate('/dashboard/storage')} />} />
             {userData && (
-              <Route path="tickets" element={<TicketsPage setUserData={setUserData} />} />
+              <>
+                <Route path="tickets" element={<TicketsPage setUserData={setUserData} />} />
+                <Route path="tickets/:id" element={<TicketDetailPage />} />
+                <Route path="tickets/new" element={<NewTicketPage />} />
+              </>
             )}
             {userData && (
               <Route path="billing" element={<Billing />} />
             )}
             <Route path="settings" element={<Settings />} />
-            <Route path="notifications" element={<Notifications />} />
+            <Route path="notifications" element={<NotificationsPage />} />
             {isOperator && (
               <>
                 <Route path="checkverification" element={<CheckVerification />} />
@@ -280,7 +277,12 @@ const Dashboard = () => {
               </>
             )}
             {isAdmin && (
-              <Route path="admin" element={<AdminPanel />} />
+              <>
+                <Route path="admin" element={<AdminPanel />} />
+                <Route path="blogadmin" element={<BlogAdmin />} />
+                <Route path="blogeditor" element={<BlogEditor />} />
+                <Route path="blogeditor/:postId" element={<BlogEditor />} />
+              </>
             )}
           </Routes>
         </div>

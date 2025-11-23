@@ -2,6 +2,7 @@ import { PrismaClient } from '@prisma/client';
 import bcrypt from 'bcrypt';
 import crypto from 'crypto';
 import nodemailer from 'nodemailer';
+import { logger } from '../../utils/logger';
 
 const prisma = new PrismaClient();
 
@@ -94,7 +95,7 @@ async function sendVerificationEmail(
           </div>
           <p><strong>Код действителен в течение 15 минут.</strong></p>
           <div class="warning">
-            <strong>⚠️ Важно:</strong> Если вы не запрашивали это действие, проигнорируйте это письмо и немедленно смените пароль.
+            <strong>Важно:</strong> Если вы не запрашивали это действие, проигнорируйте это письмо и немедленно смените пароль.
           </div>
           <p>С уважением,<br>Команда ospab.host</p>
         </div>
@@ -271,14 +272,77 @@ export async function confirmAccountDeletion(userId: number, code: string): Prom
     throw new Error('Код истёк');
   }
 
-  // Удаляем все связанные данные пользователя
-  await prisma.$transaction([
-    prisma.ticket.deleteMany({ where: { userId } }),
-    prisma.check.deleteMany({ where: { userId } }),
-    prisma.server.deleteMany({ where: { userId } }),
-    prisma.notification.deleteMany({ where: { userId } }),
-    prisma.user.delete({ where: { id: userId } }),
-  ]);
+  logger.info(`[ACCOUNT DELETE] Начинаем полное удаление пользователя ${userId}...`);
+
+  try {
+    // Каскадное удаление всех связанных данных пользователя в правильном порядке
+    await prisma.$transaction(async (tx) => {
+      // 1. Удаляем ответы в тикетах где пользователь является оператором
+      const responses = await tx.response.deleteMany({
+        where: { operatorId: userId }
+      });
+      logger.log(`  Удалено ответов оператора: ${responses.count}`);
+
+      // 2. Удаляем тикеты
+      const tickets = await tx.ticket.deleteMany({
+        where: { userId }
+      });
+      logger.log(`Удалено тикетов: ${tickets.count}`);
+
+      // 3. Удаляем чеки
+      const checks = await tx.check.deleteMany({
+        where: { userId }
+      });
+      logger.log(`Удалено чеков: ${checks.count}`);
+
+      // 4. Удаляем S3 бакеты пользователя
+      const buckets = await tx.storageBucket.deleteMany({
+        where: { userId }
+      });
+      logger.info(`Удалено S3 бакетов: ${buckets.count}`);
+
+      // 5. Удаляем уведомления
+      const notifications = await tx.notification.deleteMany({
+        where: { userId }
+      });
+      logger.info(` Удалено уведомлений: ${notifications.count}`);
+
+      // 6. Удаляем Push-подписки
+      const pushSubscriptions = await tx.pushSubscription.deleteMany({
+        where: { userId }
+      });
+      logger.info(`Удалено Push-подписок: ${pushSubscriptions.count}`);
+
+      // 7. Удаляем транзакции
+      const transactions = await tx.transaction.deleteMany({
+        where: { userId }
+      });
+      logger.info(`Удалено транзакций: ${transactions.count}`);
+
+      // 8. Удаляем сессии
+      const sessions = await tx.session.deleteMany({
+        where: { userId }
+      });
+      logger.info(`Удалено сессий: ${sessions.count}`);
+
+      // 9. Удаляем историю входов
+      const loginHistory = await tx.loginHistory.deleteMany({
+        where: { userId }
+      });
+      logger.info(`Удалено записей истории входов: ${loginHistory.count}`);
+
+      // 10. Наконец, удаляем самого пользователя
+      await tx.user.delete({
+        where: { id: userId }
+      });
+      logger.info(`Пользователь ${userId} удалён из БД`);
+    });
+
+    logger.info(`[ACCOUNT DELETE] Пользователь ${userId} полностью удалён`);
+  } catch (error) {
+    logger.error(`[ACCOUNT DELETE] Ошибка при удалении пользователя ${userId}:`, error);
+    throw new Error('Ошибка при удалении аккаунта');
+  }
 
   verificationCodes.delete(`delete_${userId}`);
 }

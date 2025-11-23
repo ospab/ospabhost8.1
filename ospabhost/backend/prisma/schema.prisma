@@ -10,71 +10,7 @@ datasource db {
 }
 
 // This is your Prisma schema file,
-model Tariff {
-  id          Int      @id @default(autoincrement())
-  name        String   @unique
-  price       Float
-  description String?
-  createdAt   DateTime @default(now())
-  servers     Server[]
-
-@@map("tariff")
-}
-
-
-
-model OperatingSystem {
-  id          Int      @id @default(autoincrement())
-  name        String   @unique
-  type        String   // linux, windows, etc
-  template    String?  // путь к шаблону для контейнера
-  createdAt   DateTime @default(now())
-  servers     Server[]
-
-  @@map("operatingsystem")
-}
-
-model Server {
-  id          Int      @id @default(autoincrement())
-  userId      Int
-  tariffId    Int
-  osId        Int
-  status      String   @default("creating") // creating, running, stopped, suspended, error
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-  user        User     @relation(fields: [userId], references: [id])
-  tariff      Tariff   @relation(fields: [tariffId], references: [id])
-  os          OperatingSystem @relation(fields: [osId], references: [id])
-  
-  // Proxmox данные
-  node        String?  
-  diskTemplate String? 
-  proxmoxId   Int?
-  
-  // Сетевые настройки
-  ipAddress   String?  // Локальный IP адрес
-  macAddress  String?  // MAC адрес
-  
-  // Доступы
-  rootPassword String?  // Зашифрованный root пароль
-  sshPublicKey String?  // SSH публичный ключ (опционально)
-  
-  // Мониторинг
-  lastPing    DateTime?
-  cpuUsage    Float?   @default(0)
-  memoryUsage Float?   @default(0)
-  diskUsage   Float?   @default(0)
-  networkIn   Float?   @default(0)
-  networkOut  Float?   @default(0)
-  
-  // Автоматические платежи
-  nextPaymentDate DateTime? // Дата следующего списания
-  autoRenew       Boolean   @default(true) // Автопродление
-  
-  payments        Payment[]
-
-  @@map("server")
-}
+// VPS/Server models removed - moving to S3 storage
 
 model User {
   id        Int      @id @default(autoincrement())
@@ -89,10 +25,20 @@ model User {
   responses Response[] @relation("OperatorResponses")
   checks    Check[]  @relation("UserChecks")
   balance   Float  @default(0)
-  servers   Server[]
   notifications Notification[]
-  payments      Payment[]
+  pushSubscriptions PushSubscription[]
   transactions  Transaction[] // История всех транзакций
+  posts         Post[]        @relation("PostAuthor") // Статьи блога
+  comments      Comment[]     @relation("UserComments") // Комментарии
+  buckets       StorageBucket[] // S3 хранилища пользователя
+  
+  // Новые relations для расширенных настроек
+  sessions              Session[]
+  loginHistory          LoginHistory[]
+  apiKeys               APIKey[]
+  notificationSettings  NotificationSettings?
+  profile               UserProfile?
+  qrLoginRequests       QrLoginRequest[]
 
   @@map("user")
 }
@@ -136,55 +82,86 @@ model Service {
 model Ticket {
   id         Int        @id @default(autoincrement())
   title      String
-  message    String
+  message    String     @db.Text
   userId     Int
-  status     String     @default("open")
+  status     String     @default("open") // open, in_progress, awaiting_reply, resolved, closed
+  priority   String     @default("normal") // low, normal, high, urgent
+  category   String     @default("general") // general, technical, billing, other
+  assignedTo Int?      // ID оператора, которому назначен тикет
   createdAt  DateTime   @default(now())
   updatedAt  DateTime   @updatedAt
+  closedAt   DateTime?
   responses  Response[] @relation("TicketResponses")
+  attachments TicketAttachment[]
   user       User?      @relation("UserTickets", fields: [userId], references: [id])
 
-@@map("ticket")
+  @@map("ticket")
 }
 
 model Response {
   id         Int      @id @default(autoincrement())
   ticketId   Int
   operatorId Int
-  message    String
+  message    String   @db.Text
+  isInternal Boolean  @default(false) // Внутренний комментарий (виден только операторам)
   createdAt  DateTime @default(now())
-  ticket     Ticket   @relation("TicketResponses", fields: [ticketId], references: [id])
+  ticket     Ticket   @relation("TicketResponses", fields: [ticketId], references: [id], onDelete: Cascade)
   operator   User     @relation("OperatorResponses", fields: [operatorId], references: [id])
+  attachments ResponseAttachment[]
 
-@@map("response")
-
-
-}
-model Notification {
-  id        Int      @id @default(autoincrement())
-  user      User     @relation(fields: [userId], references: [id])
-  userId    Int
-  title     String
-  message   String
-  createdAt DateTime @default(now())
-
-@@map("notification")
+  @@map("response")
 }
 
-// Автоматические платежи за серверы
-model Payment {
+// Прикреплённые файлы к тикетам
+model TicketAttachment {
   id        Int      @id @default(autoincrement())
-  userId    Int
-  serverId  Int
-  amount    Float
-  status    String   @default("pending") // pending, success, failed
-  type      String   // subscription, manual
+  ticketId  Int
+  ticket    Ticket   @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  
+  filename  String
+  fileUrl   String
+  fileSize  Int      // Размер в байтах
+  mimeType  String
+  
   createdAt DateTime @default(now())
-  processedAt DateTime?
-  user      User     @relation(fields: [userId], references: [id])
-  server    Server   @relation(fields: [serverId], references: [id], onDelete: Cascade)
+  
+  @@map("ticket_attachment")
+}
 
-  @@map("payment")
+// Прикреплённые файлы к ответам
+model ResponseAttachment {
+  id         Int      @id @default(autoincrement())
+  responseId Int
+  response   Response @relation(fields: [responseId], references: [id], onDelete: Cascade)
+  
+  filename   String
+  fileUrl    String
+  fileSize   Int
+  mimeType   String
+  
+  createdAt  DateTime @default(now())
+  
+  @@map("response_attachment")
+}
+
+// QR-код авторизация (как в Telegram Web)
+model QrLoginRequest {
+  id           Int      @id @default(autoincrement())
+  code         String   @unique @db.VarChar(128) // Уникальный код QR
+  userId       Int?     // После подтверждения - ID пользователя
+  user         User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  status       String   @default("pending") // pending, confirmed, expired, rejected
+  ipAddress    String?
+  userAgent    String?  @db.Text
+  
+  createdAt    DateTime @default(now())
+  expiresAt    DateTime // Через 60 секунд
+  confirmedAt  DateTime?
+  
+  @@index([code])
+  @@index([status, expiresAt])
+  @@map("qr_login_request")
 }
 
 // История всех транзакций (пополнения, списания, возвраты)
@@ -201,4 +178,242 @@ model Transaction {
   user        User     @relation(fields: [userId], references: [id])
 
   @@map("transaction")
+}
+
+// Блог
+model Post {
+  id          Int      @id @default(autoincrement())
+  title       String
+  content     String   @db.Text      // Rich text content (HTML)
+  excerpt     String?  @db.Text      // Краткое описание для ленты
+  coverImage  String?                // URL обложки
+  url         String   @unique       // Пользовательский URL (blog_name)
+  status      String   @default("draft") // draft, published, archived
+  authorId    Int
+  author      User     @relation("PostAuthor", fields: [authorId], references: [id])
+  views       Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  publishedAt DateTime?
+  comments    Comment[]
+
+  @@map("post")
+}
+
+// Комментарии к статьям блога
+model Comment {
+  id        Int      @id @default(autoincrement())
+  postId    Int
+  userId    Int?                     // null если комментарий от гостя
+  authorName String?                 // Имя автора (для гостей)
+  content   String   @db.Text
+  status    String   @default("pending") // pending, approved, rejected
+  createdAt DateTime @default(now())
+  post      Post     @relation(fields: [postId], references: [id], onDelete: Cascade)
+  user      User?    @relation("UserComments", fields: [userId], references: [id])
+
+  @@map("comment")
+}
+
+// Модель для уведомлений
+model Notification {
+  id        Int      @id @default(autoincrement())
+  userId    Int
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  type      String   // server_created, payment_charged, tariff_expiring, ticket_reply, payment_received, balance_low
+  title     String
+  message   String   @db.Text
+  
+  // Связанные сущности (опционально)
+  ticketId  Int?
+  checkId   Int?
+  
+  // Метаданные
+  actionUrl String?  // URL для перехода при клике
+  icon      String?  // Иконка (emoji или path)
+  color     String?  // Цвет (green, blue, orange, red, purple)
+  
+  isRead    Boolean  @default(false)
+  createdAt DateTime @default(now())
+  
+  @@index([userId, isRead])
+  @@index([userId, createdAt])
+  @@map("notification")
+}
+
+// Модель для Push-подписок (Web Push API)
+model PushSubscription {
+  id       Int      @id @default(autoincrement())
+  userId   Int
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  endpoint String   @db.VarChar(512)
+  p256dh   String   @db.Text // Публичный ключ для шифрования
+  auth     String   @db.Text // Токен аутентификации
+  
+  userAgent String? @db.Text // Браузер/устройство
+  
+  createdAt DateTime @default(now())
+  lastUsed  DateTime @default(now())
+  
+  @@unique([userId, endpoint])
+  @@index([userId])
+  @@map("push_subscription")
+}
+
+// Активные сеансы пользователя
+model Session {
+  id        Int      @id @default(autoincrement())
+  userId    Int
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  token     String   @unique @db.VarChar(500) // JWT refresh token
+  ipAddress String?
+  userAgent String?  @db.Text
+  device    String?  // Desktop, Mobile, Tablet
+  browser   String?  // Chrome, Firefox, Safari, etc.
+  location  String?  // Город/страна по IP
+  
+  lastActivity DateTime @default(now())
+  createdAt    DateTime @default(now())
+  expiresAt    DateTime
+  
+  @@index([userId])
+  @@map("session")
+}
+
+// История входов
+model LoginHistory {
+  id        Int      @id @default(autoincrement())
+  userId    Int
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  ipAddress String
+  userAgent String?  @db.Text
+  device    String?
+  browser   String?
+  location  String?
+  
+  success   Boolean  @default(true) // true = успешный вход, false = неудачная попытка
+  createdAt DateTime @default(now())
+  
+  @@index([userId])
+  @@index([createdAt])
+  @@map("login_history")
+}
+
+// API ключи для разработчиков
+model APIKey {
+  id          Int      @id @default(autoincrement())
+  userId      Int
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  name        String   // Название (например, "Production API")
+  key         String   @unique @db.VarChar(64) // Сам API ключ
+  prefix      String   @db.VarChar(16) // Префикс для отображения (ospab_xxxx)
+  
+  permissions String?  @db.Text // JSON массив разрешений ["servers:read", "servers:create", etc.]
+  
+  lastUsed    DateTime?
+  createdAt   DateTime @default(now())
+  expiresAt   DateTime?
+  
+  @@index([userId])
+  @@index([key])
+  @@map("api_key")
+}
+
+// Настройки уведомлений пользователя
+model NotificationSettings {
+  id     Int  @id @default(autoincrement())
+  userId Int  @unique
+  user   User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  // Email уведомления
+  emailBalanceLow       Boolean @default(true)
+  emailPaymentCharged   Boolean @default(true)
+  emailTicketReply      Boolean @default(true)
+  emailNewsletter       Boolean @default(false)
+  
+  // Push уведомления
+  pushBalanceLow        Boolean @default(true)
+  pushPaymentCharged    Boolean @default(true)
+  pushTicketReply       Boolean @default(true)
+  
+  updatedAt DateTime @updatedAt
+  
+  @@map("notification_settings")
+}
+
+// Настройки профиля
+model UserProfile {
+  id          Int      @id @default(autoincrement())
+  userId      Int      @unique
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  avatarUrl   String?  // Путь к аватару
+  phoneNumber String?
+  timezone    String?  @default("Europe/Moscow")
+  language    String?  @default("ru")
+  
+  // Настройки приватности
+  profilePublic Boolean @default(false)
+  showEmail     Boolean @default(false)
+  
+  // 2FA
+  twoFactorEnabled Boolean @default(false)
+  twoFactorSecret  String? @db.Text
+  
+  updatedAt   DateTime @updatedAt
+  
+  @@map("user_profile")
+}
+
+// S3 Bucket модель
+model StorageBucket {
+  id           Int      @id @default(autoincrement())
+  userId       Int
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  name         String   // Уникальное имя бакета в рамках пользователя
+  plan         String   // Выбранный тариф (basic, standard, plus, pro, enterprise)
+  quotaGb      Int      // Лимит включённого объёма в GB
+  usedBytes    BigInt   @default(0) // Текущий объём хранения в байтах
+  objectCount  Int      @default(0)
+  storageClass String   @default("standard") // standard, infrequent, archive
+  region       String   @default("ru-central-1")
+  public       Boolean  @default(false)
+  versioning   Boolean  @default(false)
+  status       String   @default("active") // active, grace, suspended
+  monthlyPrice Float
+  nextBillingDate DateTime?
+  lastBilledAt   DateTime?
+  autoRenew    Boolean  @default(true)
+  usageSyncedAt DateTime?
+
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  accessKeys   StorageAccessKey[]
+
+  @@index([userId])
+  @@unique([userId, name]) // Имя уникально в рамках пользователя
+  @@map("storage_bucket")
+}
+
+model StorageAccessKey {
+  id        Int      @id @default(autoincrement())
+  bucketId  Int
+  bucket    StorageBucket @relation(fields: [bucketId], references: [id], onDelete: Cascade)
+
+  accessKey String   @unique
+  secretKey String   // хранится в зашифрованном виде
+  label     String?
+
+  createdAt DateTime @default(now())
+  lastUsedAt DateTime?
+
+  @@index([bucketId])
+  @@map("storage_access_key")
 }

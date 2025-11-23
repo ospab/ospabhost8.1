@@ -48,21 +48,21 @@ export const Modal: React.FC<ModalProps> = ({
     switch (type) {
       case 'warning':
         return {
-          icon: '⚠️',
+          icon: '!',
           iconBg: 'bg-yellow-100',
           iconColor: 'text-yellow-600',
           buttonBg: 'bg-yellow-600 hover:bg-yellow-700'
         };
       case 'danger':
         return {
-          icon: '🗑️',
+          icon: '×',
           iconBg: 'bg-red-100',
           iconColor: 'text-red-600',
           buttonBg: 'bg-red-600 hover:bg-red-700'
         };
       default:
         return {
-          icon: 'ℹ️',
+          icon: 'i',
           iconBg: 'bg-blue-100',
           iconColor: 'text-blue-600',
           buttonBg: 'bg-blue-600 hover:bg-blue-700'

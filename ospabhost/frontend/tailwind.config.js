@@ -7,8 +7,8 @@ export default {
   theme: {
     extend: {
       colors: {
-        'ospab-primary': '#3B82F6', // Голубой
-        'ospab-accent': '#FF13F0',  // Розовый
+        'ospab-primary': '#2563EB', // Более тёмный синий (blue-600) для лучшего контраста
+        'ospab-accent': '#DB2777',  // Более тёмный розовый (pink-600) для лучшего контраста
       },
       fontFamily: {
         mono: ['Share Tech Mono', 'monospace'],
