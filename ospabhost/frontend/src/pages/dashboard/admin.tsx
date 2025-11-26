@@ -1,33 +1,35 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useMemo, useCallback } from 'react';
 import axios from 'axios';
+
 import { API_URL } from '../../config/api';
 import { useToast } from '../../hooks/useToast';
 import { showConfirm, showPrompt } from '../../components/modalHelpers';
+import AdminPricingTab from '../../components/AdminPricingTab';
+import AdminTestingTab from '../../components/AdminTestingTab';
 
-interface Server {
+type AdminTransaction = {
   id: number;
-  name: string;
-  status: string;
-  vmid: number;
-  ipAddress: string | null;
-  nextPaymentDate: string | null;
-  tariff: {
-    name: string;
-  };
-  os: {
-    name: string;
-  };
-}
-
-interface Transaction {
-  id: number;
-  type: string;
   amount: number;
   description: string;
   createdAt: string;
-}
+  user?: {
+    id: number;
+    username: string;
+    email: string;
+  };
+};
 
-interface User {
+type AdminStatistics = {
+  users: { total: number };
+  servers: { total: number; active: number; suspended: number; grace: number };
+  storage: { total: number; public: number; objects: number; usedBytes: number; quotaGb: number };
+  balance: { total: number };
+  checks: { pending: number };
+  tickets: { open: number };
+  recentTransactions: AdminTransaction[];
+};
+
+type AdminUserSummary = {
   id: number;
   username: string;
   email: string;
@@ -36,572 +38,1143 @@ interface User {
   operator: number;
   createdAt: string;
   _count: {
-    servers: number;
-    tickets: number;
+    buckets?: number;
+    tickets?: number;
   };
-}
+};
 
-interface UserDetails extends User {
-  servers: Server[];
-  transactions: Transaction[];
-}
+type AdminBucket = {
+  id: number;
+  name: string;
+  status: string;
+  region?: string | null;
+  public: boolean;
+  usedBytes: number;
+  quotaGb: number;
+  storageClass?: string | null;
+  monthlyPrice?: number | null;
+  nextBillingDate?: string | null;
+  createdAt: string;
+};
 
-interface Statistics {
-  users: { total: number };
-  servers: { total: number; active: number; suspended: number };
-  balance: { total: number };
-  checks: { pending: number };
-  tickets: { open: number };
-  recentTransactions: Transaction[];
-}
+type AdminTicket = {
+  id: number;
+  title: string;
+  status: string;
+  priority: string;
+  createdAt: string;
+};
+
+type AdminCheck = {
+  id: number;
+  amount: number;
+  status: string;
+  createdAt: string;
+};
+
+type AdminUserDetails = AdminUserSummary & {
+  buckets: AdminBucket[];
+  tickets: AdminTicket[];
+  checks: AdminCheck[];
+  transactions: AdminTransaction[];
+};
+
+type BalanceModalState = {
+  open: boolean;
+  mode: 'add' | 'withdraw';
+  amount: string;
+  description: string;
+  submitting: boolean;
+};
+
+const formatCurrency = (value: number) =>
+  new Intl.NumberFormat('ru-RU', { style: 'currency', currency: 'RUB' }).format(value ?? 0);
+
+const formatNumber = (value: number) => new Intl.NumberFormat('ru-RU').format(value ?? 0);
+
+const formatBytes = (raw: number | string | null | undefined) => {
+  const value = Number(raw ?? 0);
+  if (!Number.isFinite(value) || value <= 0) {
+    return '0 Б';
+  }
+
+  const units = ['Б', 'КБ', 'МБ', 'ГБ', 'ТБ', 'ПБ'];
+  const exponent = Math.min(Math.floor(Math.log(value) / Math.log(1024)), units.length - 1);
+  const size = value / Math.pow(1024, exponent);
+  return `${size.toFixed(size >= 10 || exponent === 0 ? 0 : 1)} ${units[exponent]}`;
+};
+
+const formatDateTime = (value?: string | null) => {
+  if (!value) {
+    return '—';
+  }
+  try {
+    return new Date(value).toLocaleString('ru-RU');
+  } catch {
+    return value;
+  }
+};
+
+const normalizeStatistics = (payload: AdminStatistics): AdminStatistics => ({
+  users: { total: Number(payload.users?.total ?? 0) },
+  servers: {
+    total: Number(payload.servers?.total ?? 0),
+    active: Number(payload.servers?.active ?? 0),
+    suspended: Number(payload.servers?.suspended ?? 0),
+    grace: Number(payload.servers?.grace ?? 0)
+  },
+  storage: {
+    total: Number(payload.storage?.total ?? 0),
+    public: Number(payload.storage?.public ?? 0),
+    objects: Number(payload.storage?.objects ?? 0),
+    usedBytes: Number(payload.storage?.usedBytes ?? 0),
+    quotaGb: Number(payload.storage?.quotaGb ?? 0)
+  },
+  balance: { total: Number(payload.balance?.total ?? 0) },
+  checks: { pending: Number(payload.checks?.pending ?? 0) },
+  tickets: { open: Number(payload.tickets?.open ?? 0) },
+  recentTransactions: Array.isArray(payload.recentTransactions) ? payload.recentTransactions : []
+});
+
+const normalizeUsers = (list: AdminUserSummary[]): AdminUserSummary[] =>
+  list.map((user) => ({
+    ...user,
+    balance: Number(user.balance ?? 0),
+    operator: Number(user.operator ?? 0),
+    _count: {
+      buckets: Number(user._count?.buckets ?? 0),
+      tickets: Number(user._count?.tickets ?? 0)
+    }
+  }));
 
 const AdminPanel = () => {
   const { addToast } = useToast();
-  const [users, setUsers] = useState<User[]>([]);
-  const [statistics, setStatistics] = useState<Statistics | null>(null);
-  const [selectedUser, setSelectedUser] = useState<UserDetails | null>(null);
+
+  const [activeTab, setActiveTab] = useState<'overview' | 'users' | 'pricing' | 'testing'>('overview');
+  const [stats, setStats] = useState<AdminStatistics | null>(null);
+  const [statsError, setStatsError] = useState<string | null>(null);
+  const [users, setUsers] = useState<AdminUserSummary[]>([]);
+  const [usersError, setUsersError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState<'users' | 'stats'>('stats');
-  const [testingPush, setTestingPush] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  const [lastUpdated, setLastUpdated] = useState<string | null>(null);
 
-  // Модальные окна
-  const [showBalanceModal, setShowBalanceModal] = useState(false);
-  const [balanceAction, setBalanceAction] = useState<'add' | 'withdraw'>('add');
-  const [balanceAmount, setBalanceAmount] = useState('');
-  const [balanceDescription, setBalanceDescription] = useState('');
+  const [searchTerm, setSearchTerm] = useState('');
+  const [selectedUserId, setSelectedUserId] = useState<number | null>(null);
+  const [selectedUser, setSelectedUser] = useState<AdminUserDetails | null>(null);
+  const [selectedUserLoading, setSelectedUserLoading] = useState(false);
 
-  const loadData = useCallback(async () => {
-    try {
-      setLoading(true);
-      const token = localStorage.getItem('access_token');
-      const headers = { Authorization: `Bearer ${token}` };
+  const [balanceModal, setBalanceModal] = useState<BalanceModalState>({
+    open: false,
+    mode: 'add',
+    amount: '',
+    description: '',
+    submitting: false
+  });
 
-      const [usersRes, statsRes] = await Promise.all([
-        axios.get(`${API_URL}/api/admin/users`, { headers }),
-        axios.get(`${API_URL}/api/admin/statistics`, { headers })
-      ]);
+  const [roleUpdating, setRoleUpdating] = useState<Record<number, boolean>>({});
+  const [deletingUserId, setDeletingUserId] = useState<number | null>(null);
+  const [deletingBucketId, setDeletingBucketId] = useState<number | null>(null);
 
-      setUsers(usersRes.data.data);
-      setStatistics(statsRes.data.data);
-    } catch (error) {
-      console.error('Ошибка загрузки данных админки:', error);
-      if (error && typeof error === 'object' && 'response' in error) {
-        const axiosError = error as { response?: { status?: number } };
-        if (axiosError.response?.status === 403) {
-          addToast('У вас нет прав администратора', 'error');
-        }
-      }
-    } finally {
-      setLoading(false);
+  const getAuthHeaders = useCallback(() => {
+    const token = localStorage.getItem('access_token');
+    if (!token) {
+      addToast('Токен не найден. Пожалуйста, авторизуйтесь заново.', 'error');
+      return null;
     }
+    return { Authorization: `Bearer ${token}` };
   }, [addToast]);
 
-  useEffect(() => {
-    loadData();
-  }, [loadData]);
-
-  const loadUserDetails = async (userId: number) => {
-    try {
-      const token = localStorage.getItem('access_token');
-      const headers = { Authorization: `Bearer ${token}` };
-      const res = await axios.get(`${API_URL}/api/admin/users/${userId}`, { headers });
-      setSelectedUser(res.data.data);
-    } catch (error) {
-      console.error('Ошибка загрузки пользователя:', error);
-      addToast('Ошибка загрузки данных пользователя', 'error');
+  const extractErrorMessage = useCallback((error: unknown, fallback: string) => {
+    if (axios.isAxiosError(error)) {
+      return (
+        (error.response?.data as { message?: string } | undefined)?.message ||
+        error.message ||
+        fallback
+      );
     }
-  };
-
-  const handleBalanceChange = async () => {
-    if (!selectedUser || !balanceAmount) return;
-
-    try {
-      const token = localStorage.getItem('access_token');
-      const headers = { Authorization: `Bearer ${token}` };
-      const url = `${API_URL}/api/admin/users/${selectedUser.id}/balance/${balanceAction}`;
-
-      await axios.post(url, {
-        amount: parseFloat(balanceAmount),
-        description: balanceDescription
-      }, { headers });
-
-      addToast(`Баланс успешно ${balanceAction === 'add' ? 'пополнен' : 'списан'}`, 'success');
-      setShowBalanceModal(false);
-      setBalanceAmount('');
-      setBalanceDescription('');
-      loadUserDetails(selectedUser.id);
-      loadData();
-    } catch (error) {
-      console.error('Ошибка изменения баланса:', error);
-      addToast('Ошибка изменения баланса', 'error');
+    if (error instanceof Error) {
+      return error.message;
     }
-  };
+    return fallback;
+  }, []);
 
-  const handleDeleteServer = async (serverId: number) => {
-    const confirmed = await showConfirm('Вы уверены, что хотите удалить этот сервер?', 'Удаление сервера');
-    if (!confirmed) return;
-
-    const reason = await showPrompt('Укажите причину удаления (необязательно):', 'Причина удаления');
-
+  const loadStatistics = useCallback(async (headers: Record<string, string>) => {
     try {
-      const token = localStorage.getItem('access_token');
-      const headers = { Authorization: `Bearer ${token}` };
-      
-      await axios.delete(`${API_URL}/api/admin/servers/${serverId}`, {
-        headers,
-        data: { reason }
-      });
-
-      addToast('Сервер успешно удалён', 'success');
-      if (selectedUser) {
-        loadUserDetails(selectedUser.id);
-      }
-      loadData();
-    } catch (error) {
-      console.error('Ошибка удаления сервера:', error);
-      addToast('Ошибка удаления сервера', 'error');
-    }
-  };
-
-  const toggleAdmin = async (userId: number, currentStatus: boolean) => {
-    try {
-      const token = localStorage.getItem('access_token');
-      const headers = { Authorization: `Bearer ${token}` };
-      
-      await axios.patch(`${API_URL}/api/admin/users/${userId}/role`, {
-        isAdmin: !currentStatus
-      }, { headers });
-
-      addToast('Права обновлены', 'success');
-      loadData();
-    } catch (error) {
-      console.error('Ошибка обновления прав:', error);
-      addToast('Ошибка обновления прав', 'error');
-    }
-  };
-
-  const handleTestPushNotification = async () => {
-    console.log('🧪 [FRONTEND] Начинаем тестовую отправку Push-уведомления...');
-    setTestingPush(true);
-    
-    try {
-      const token = localStorage.getItem('access_token');
-      console.log('📝 [FRONTEND] Токен найден:', token ? 'Да' : 'Нет');
-      
-      if (!token) {
-        addToast('Токен не найден. Пожалуйста, войдите снова.', 'error');
-        return;
-      }
-      
-      // Проверяем разрешения
-      console.log('🔍 [FRONTEND] Проверяем разрешения на уведомления...');
-      console.log('  Notification.permission:', Notification.permission);
-      
-      if (Notification.permission !== 'granted') {
-        addToast('⚠️ Уведомления не разрешены! Включите их на странице "Уведомления"', 'error');
-        console.log('❌ [FRONTEND] Уведомления не разрешены');
-        return;
-      }
-      
-      // Проверяем Service Worker
-      console.log('🔍 [FRONTEND] Проверяем Service Worker...');
-      const registration = await navigator.serviceWorker.ready;
-      console.log('  ✅ Service Worker готов:', registration);
-      
-      // Проверяем Push подписку
-      console.log('🔍 [FRONTEND] Проверяем Push подписку...');
-      const subscription = await registration.pushManager.getSubscription();
-      if (subscription) {
-        console.log('  ✅ Push подписка найдена:', subscription.endpoint.substring(0, 50) + '...');
-      } else {
-        console.log('  ❌ Push подписка НЕ найдена');
-        addToast('❌ Push подписка не найдена! Включите уведомления заново.', 'error');
-        return;
-      }
-      
-      const headers = { Authorization: `Bearer ${token}` };
-      
-      console.log('📤 [FRONTEND] Отправляем запрос на:', `${API_URL}/api/notifications/test-push`);
-      
-      const response = await axios.post(
-        `${API_URL}/api/notifications/test-push`,
-        {},
+      const response = await axios.get<{ data: AdminStatistics }>(
+        `${API_URL}/api/admin/statistics`,
         { headers }
       );
-      
-      console.log('✅ [FRONTEND] Ответ от сервера:', response.data);
-      
-      if (response.data.success) {
-        addToast('✅ Тестовое уведомление отправлено! Ждите системное уведомление в углу экрана.', 'success');
-        
-        console.log('💡 [FRONTEND] ВАЖНО: Уведомление должно появиться как СИСТЕМНОЕ уведомление');
-        console.log('   Windows: правый нижний угол экрана (Action Center)');
-        console.log('   macOS: правый верхний угол');
-        console.log('   Это НЕ уведомление на сайте, а уведомление браузера/ОС!');
-        
-        
-        if (response.data.data) {
-          console.log('📊 [FRONTEND] Детали:', {
-            notificationId: response.data.data.notificationId,
-            subscriptionsCount: response.data.data.subscriptionsCount
-          });
-        }
-      } else {
-        addToast(`❌ ${response.data.message}`, 'error');
-      }
-      
+      setStats(normalizeStatistics(response.data.data));
+      setStatsError(null);
+      return true;
     } catch (error) {
-      console.error('❌ [FRONTEND] Ошибка отправки тестового уведомления:', error);
-      
-      if (axios.isAxiosError(error)) {
-        console.error('📋 [FRONTEND] Детали ошибки Axios:', {
-          status: error.response?.status,
-          statusText: error.response?.statusText,
-          data: error.response?.data,
-          url: error.config?.url
-        });
-        
-        const errorMessage = error.response?.data?.message || error.message;
-        addToast(`Ошибка: ${errorMessage}`, 'error');
-        
-        if (error.response?.status === 403) {
-          console.log('⚠️ [FRONTEND] 403 Forbidden - проверьте права администратора');
-        } else if (error.response?.status === 400) {
-          console.log('⚠️ [FRONTEND] 400 Bad Request - возможно, нет активных подписок');
-        }
-      } else {
-        addToast('Ошибка отправки тестового уведомления', 'error');
+      const message = extractErrorMessage(error, 'Не удалось загрузить статистику.');
+      setStatsError(message);
+      setStats(null);
+      return false;
+    }
+  }, [extractErrorMessage]);
+
+  const loadUsers = useCallback(async (headers: Record<string, string>) => {
+    try {
+      const response = await axios.get<{ data: AdminUserSummary[] }>(
+        `${API_URL}/api/admin/users`,
+        { headers }
+      );
+      setUsers(normalizeUsers(response.data.data ?? []));
+      setUsersError(null);
+      return true;
+    } catch (error) {
+      const message = extractErrorMessage(error, 'Не удалось загрузить пользователей.');
+      setUsersError(message);
+      setUsers([]);
+      return false;
+    }
+  }, [extractErrorMessage]);
+
+  const fetchUserDetails = useCallback(
+    async (userId: number, headersOverride?: Record<string, string>) => {
+      const headers = headersOverride ?? getAuthHeaders();
+      if (!headers) {
+        return false;
       }
-    } finally {
-      setTestingPush(false);
+      setSelectedUserLoading(true);
+      try {
+        const response = await axios.get<{ data: AdminUserDetails }>(
+          `${API_URL}/api/admin/users/${userId}`,
+          { headers }
+        );
+        const payload = response.data.data;
+        setSelectedUser({
+          ...payload,
+          balance: Number(payload.balance ?? 0),
+          operator: Number(payload.operator ?? 0),
+          buckets: Array.isArray(payload.buckets)
+            ? payload.buckets.map((bucket) => ({
+                ...bucket,
+                usedBytes: Number(bucket.usedBytes ?? 0),
+                quotaGb: Number(bucket.quotaGb ?? 0),
+                monthlyPrice: bucket.monthlyPrice === null ? null : Number(bucket.monthlyPrice)
+              }))
+            : [],
+          tickets: Array.isArray(payload.tickets) ? payload.tickets : [],
+          checks: Array.isArray(payload.checks) ? payload.checks : [],
+          transactions: Array.isArray(payload.transactions) ? payload.transactions : []
+        });
+        return true;
+      } catch (error) {
+        const message = extractErrorMessage(error, 'Не удалось загрузить данные пользователя.');
+        addToast(message, 'error');
+        setSelectedUser(null);
+        return false;
+      } finally {
+        setSelectedUserLoading(false);
+      }
+    },
+    [addToast, extractErrorMessage, getAuthHeaders]
+  );
+
+  const bootstrap = useCallback(async () => {
+    const headers = getAuthHeaders();
+    if (!headers) {
+      setLoading(false);
+      return;
+    }
+
+    setLoading(true);
+    const [statsOk, usersOk] = await Promise.all([
+      loadStatistics(headers),
+      loadUsers(headers)
+    ]);
+
+    if (statsOk && usersOk) {
+      setLastUpdated(new Date().toISOString());
+    }
+
+    setLoading(false);
+  }, [getAuthHeaders, loadStatistics, loadUsers]);
+
+  const refreshAll = useCallback(async () => {
+    const headers = getAuthHeaders();
+    if (!headers) {
+      return;
+    }
+    setRefreshing(true);
+    const statsOk = await loadStatistics(headers);
+    const usersOk = await loadUsers(headers);
+    if (statsOk && usersOk) {
+      setLastUpdated(new Date().toISOString());
+      addToast('Данные обновлены', 'success');
+    }
+    setRefreshing(false);
+  }, [addToast, getAuthHeaders, loadStatistics, loadUsers]);
+
+  useEffect(() => {
+    void bootstrap();
+  }, [bootstrap]);
+
+  const filteredUsers = useMemo(() => {
+    const term = searchTerm.trim().toLowerCase();
+    if (!term) {
+      return users;
+    }
+    return users.filter((user) =>
+      [user.username, user.email, user.id.toString()].some((value) =>
+        value?.toLowerCase().includes(term)
+      )
+    );
+  }, [searchTerm, users]);
+
+  const openUserDetails = useCallback(
+    async (userId: number) => {
+      setSelectedUserId(userId);
+      setSelectedUser(null);
+      await fetchUserDetails(userId);
+    },
+    [fetchUserDetails]
+  );
+
+  const closeUserDetails = () => {
+    setSelectedUserId(null);
+    setSelectedUser(null);
+  };
+
+  const openBalanceDialog = (mode: 'add' | 'withdraw') => {
+    setBalanceModal({
+      open: true,
+      mode,
+      amount: '',
+      description: '',
+      submitting: false
+    });
+  };
+
+  const submitBalanceChange = async () => {
+    if (!selectedUserId || !selectedUser) {
+      return;
+    }
+
+    const amount = Number(balanceModal.amount);
+    if (!Number.isFinite(amount) || amount <= 0) {
+      addToast('Введите положительную сумму.', 'error');
+      return;
+    }
+
+    const headers = getAuthHeaders();
+    if (!headers) {
+      return;
+    }
+
+    setBalanceModal((prev) => ({ ...prev, submitting: true }));
+
+    try {
+      const endpoint = `${API_URL}/api/admin/users/${selectedUserId}/balance/${balanceModal.mode}`;
+      await axios.post(
+        endpoint,
+        {
+          amount,
+          description: balanceModal.description?.trim() || undefined
+        },
+        { headers }
+      );
+
+      addToast(
+        balanceModal.mode === 'add'
+          ? 'Баланс успешно пополнен.'
+          : 'Баланс успешно списан.',
+        'success'
+      );
+
+      setBalanceModal({ open: false, mode: 'add', amount: '', description: '', submitting: false });
+
+      await Promise.all([
+        loadUsers(headers),
+        fetchUserDetails(selectedUserId, headers)
+      ]);
+    } catch (error) {
+      const message = extractErrorMessage(error, 'Ошибка изменения баланса.');
+      addToast(message, 'error');
+      setBalanceModal((prev) => ({ ...prev, submitting: false }));
     }
   };
 
-  const handleTestLocalNotification = () => {
-    console.log('🔔 [FRONTEND] Тестируем локальное уведомление (без сервера)...');
-    
-    if (Notification.permission !== 'granted') {
-      addToast('⚠️ Уведомления не разрешены!', 'error');
-      console.log('❌ [FRONTEND] Notification.permission:', Notification.permission);
+  const handleToggleAdmin = async (user: AdminUserSummary) => {
+    const headers = getAuthHeaders();
+    if (!headers) {
       return;
     }
-    
+
+    setRoleUpdating((prev) => ({ ...prev, [user.id]: true }));
+    const nextValue = !user.isAdmin;
+
     try {
-      const notification = new Notification('🔔 Локальный тест', {
-        body: 'Если вы видите это уведомление, значит браузер и ОС настроены правильно!',
-        icon: '/logo192.png',
-        badge: '/favicon.svg',
-        tag: 'local-test',
-        requireInteraction: false
-      });
-      
-      console.log('✅ [FRONTEND] Локальное уведомление создано:', notification);
-      addToast('✅ Локальное уведомление отправлено!', 'success');
-      
-      notification.onclick = () => {
-        console.log('🖱️ [FRONTEND] Клик по локальному уведомлению');
-        window.focus();
-        notification.close();
-      };
-      
-      setTimeout(() => {
-        notification.close();
-      }, 5000);
-      
+      await axios.patch(
+        `${API_URL}/api/admin/users/${user.id}/role`,
+        { isAdmin: nextValue },
+        { headers }
+      );
+
+      addToast(
+        nextValue ? 'Пользователь назначен администратором.' : 'Права администратора сняты.',
+        'success'
+      );
+
+      setUsers((prev) =>
+        prev.map((item) => (item.id === user.id ? { ...item, isAdmin: nextValue } : item))
+      );
+
+      if (selectedUser?.id === user.id) {
+        setSelectedUser({ ...selectedUser, isAdmin: nextValue });
+      }
     } catch (error) {
-      console.error('❌ [FRONTEND] Ошибка локального уведомления:', error);
-      addToast('Ошибка создания уведомления', 'error');
+      const message = extractErrorMessage(error, 'Не удалось обновить права.');
+      addToast(message, 'error');
+    } finally {
+      setRoleUpdating((prev) => ({ ...prev, [user.id]: false }));
+    }
+  };
+
+  const handleToggleOperator = async (user: AdminUserSummary) => {
+    const headers = getAuthHeaders();
+    if (!headers) {
+      return;
+    }
+
+    setRoleUpdating((prev) => ({ ...prev, [user.id]: true }));
+    const nextValue = user.operator ? 0 : 1;
+
+    try {
+      await axios.patch(
+        `${API_URL}/api/admin/users/${user.id}/role`,
+        { operator: nextValue },
+        { headers }
+      );
+
+      addToast(
+        nextValue ? 'Пользователь назначен оператором.' : 'Права оператора сняты.',
+        'success'
+      );
+
+      setUsers((prev) =>
+        prev.map((item) => (item.id === user.id ? { ...item, operator: nextValue } : item))
+      );
+
+      if (selectedUser?.id === user.id) {
+        setSelectedUser({ ...selectedUser, operator: nextValue });
+      }
+    } catch (error) {
+      const message = extractErrorMessage(error, 'Не удалось обновить роль оператора.');
+      addToast(message, 'error');
+    } finally {
+      setRoleUpdating((prev) => ({ ...prev, [user.id]: false }));
+    }
+  };
+
+  const handleDeleteUser = async (user: AdminUserSummary) => {
+    const confirmed = await showConfirm(
+      `Удалить аккаунт пользователя «${user.username}» (ID ${user.id})?`,
+      'Удаление пользователя'
+    );
+
+    if (!confirmed) {
+      return;
+    }
+
+    const reason = await showPrompt('Укажите причину удаления (необязательно):', 'Причина удаления');
+    const headers = getAuthHeaders();
+    if (!headers) {
+      return;
+    }
+
+    setDeletingUserId(user.id);
+    try {
+      await axios.delete(`${API_URL}/api/admin/users/${user.id}`, {
+        headers,
+        data: { reason: reason?.trim() || undefined }
+      });
+
+      addToast('Пользователь удалён.', 'success');
+      setUsers((prev) => prev.filter((item) => item.id !== user.id));
+
+      if (selectedUserId === user.id) {
+        closeUserDetails();
+      }
+
+      await loadStatistics(headers);
+    } catch (error) {
+      const message = extractErrorMessage(error, 'Не удалось удалить пользователя.');
+      addToast(message, 'error');
+    } finally {
+      setDeletingUserId(null);
+    }
+  };
+
+  const handleDeleteBucket = async (bucket: AdminBucket) => {
+    if (!selectedUserId) {
+      return;
+    }
+
+    const confirmed = await showConfirm(
+      `Удалить сервер «${bucket.name}» (ID ${bucket.id})?`,
+      'Удаление сервера'
+    );
+
+    if (!confirmed) {
+      return;
+    }
+
+    const reason = await showPrompt('Укажите причину удаления (необязательно):', 'Причина удаления');
+    const headers = getAuthHeaders();
+    if (!headers) {
+      return;
+    }
+
+    setDeletingBucketId(bucket.id);
+    try {
+      await axios.delete(`${API_URL}/api/admin/buckets/${bucket.id}`, {
+        headers,
+        data: { reason: reason?.trim() || undefined }
+      });
+
+      addToast('Сервер удалён.', 'success');
+      await Promise.all([
+        fetchUserDetails(selectedUserId, headers),
+        loadStatistics(headers)
+      ]);
+    } catch (error) {
+      const message = extractErrorMessage(error, 'Не удалось удалить сервер.');
+      addToast(message, 'error');
+    } finally {
+      setDeletingBucketId(null);
     }
   };
 
   if (loading) {
     return (
-      <div className="flex justify-center items-center h-screen">
-        <div className="text-xl">Загрузка...</div>
+      <div className="flex min-h-[60vh] items-center justify-center">
+        <div className="text-lg text-gray-500">Загрузка админ-панели...</div>
       </div>
     );
   }
 
   return (
     <div className="container mx-auto px-4 py-8">
-      <div className="flex justify-between items-center mb-8">
-        <h1 className="text-3xl font-bold">Админ-панель</h1>
-        
-        {/* Кнопки тестовых уведомлений */}
-        <div className="flex gap-3">
-          <button
-            onClick={handleTestLocalNotification}
-            className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 flex items-center gap-2 transition-all"
-            title="Локальный тест (без сервера) - должно появиться сразу в углу экрана"
-          >
-            <span className="text-xl">🔔</span>
-            <span>Локальный тест</span>
-          </button>
-          
-          <button
-            onClick={handleTestPushNotification}
-            disabled={testingPush}
-            className="px-6 py-3 bg-purple-600 text-white rounded-lg hover:bg-purple-700 disabled:bg-gray-400 disabled:cursor-not-allowed flex items-center gap-2 transition-all"
-            title="Push-уведомление через сервер - требует подписку"
-          >
-            {testingPush ? (
-              <>
-                <div className="animate-spin h-5 w-5 border-2 border-white border-t-transparent rounded-full"></div>
-                <span>Отправка...</span>
-              </>
-            ) : (
-              <>
-                <span className="text-xl">🧪</span>
-                <span>Тест Push</span>
-              </>
-            )}
-          </button>
+      <div className="mb-8 flex flex-wrap items-center justify-between gap-4">
+        <div>
+          <h1 className="text-3xl font-bold text-gray-900">Админ-панель</h1>
+          <p className="text-sm text-gray-500">
+            {lastUpdated ? `Последнее обновление: ${formatDateTime(lastUpdated)}` : 'Данные не обновлялись'}
+          </p>
         </div>
+        <button
+          onClick={() => void refreshAll()}
+          disabled={refreshing}
+          className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-blue-300"
+        >
+          {refreshing ? (
+            <>
+              <span className="h-4 w-4 animate-spin rounded-full border-2 border-white border-t-transparent" />
+              <span>Обновляем...</span>
+            </>
+          ) : (
+            <>
+              <span>Обновить данные</span>
+            </>
+          )}
+        </button>
       </div>
 
-      {/* Tabs */}
-      <div className="flex gap-4 mb-6 border-b">
+      <div className="mb-6 flex gap-4 border-b">
         <button
-          className={`px-4 py-2 ${activeTab === 'stats' ? 'border-b-2 border-blue-500 font-bold' : ''}`}
-          onClick={() => setActiveTab('stats')}
+          onClick={() => setActiveTab('overview')}
+          className={`px-4 py-2 transition ${
+            activeTab === 'overview'
+              ? 'border-b-2 border-blue-500 font-semibold text-blue-600'
+              : 'text-gray-500 hover:text-gray-700'
+          }`}
         >
-          Статистика
+          Обзор
         </button>
         <button
-          className={`px-4 py-2 ${activeTab === 'users' ? 'border-b-2 border-blue-500 font-bold' : ''}`}
           onClick={() => setActiveTab('users')}
+          className={`px-4 py-2 transition ${
+            activeTab === 'users'
+              ? 'border-b-2 border-blue-500 font-semibold text-blue-600'
+              : 'text-gray-500 hover:text-gray-700'
+          }`}
         >
           Пользователи
         </button>
+        <button
+          onClick={() => setActiveTab('pricing')}
+          className={`px-4 py-2 transition ${
+            activeTab === 'pricing'
+              ? 'border-b-2 border-blue-500 font-semibold text-blue-600'
+              : 'text-gray-500 hover:text-gray-700'
+          }`}
+        >
+          Тарифы
+        </button>
+        <button
+          onClick={() => setActiveTab('testing')}
+          className={`px-4 py-2 transition ${
+            activeTab === 'testing'
+              ? 'border-b-2 border-blue-500 font-semibold text-blue-600'
+              : 'text-gray-500 hover:text-gray-700'
+          }`}
+        >
+          Тестирование
+        </button>
       </div>
 
-      {/* Statistics Tab */}
-      {activeTab === 'stats' && statistics && (
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
-          <div className="bg-white p-6 rounded-lg shadow">
-            <h3 className="text-gray-500 text-sm">Всего пользователей</h3>
-            <p className="text-3xl font-bold">{statistics.users.total}</p>
-          </div>
-          <div className="bg-white p-6 rounded-lg shadow">
-            <h3 className="text-gray-500 text-sm">Серверы</h3>
-            <p className="text-3xl font-bold">{statistics.servers.total}</p>
-            <p className="text-sm text-gray-600">
-              Активных: {statistics.servers.active} | Приостановлено: {statistics.servers.suspended}
-            </p>
-          </div>
-          <div className="bg-white p-6 rounded-lg shadow">
-            <h3 className="text-gray-500 text-sm">Общий баланс</h3>
-            <p className="text-3xl font-bold">{statistics.balance.total.toFixed(2)} ₽</p>
-          </div>
-          <div className="bg-white p-6 rounded-lg shadow">
-            <h3 className="text-gray-500 text-sm">Ожидающие чеки</h3>
-            <p className="text-3xl font-bold">{statistics.checks.pending}</p>
-          </div>
-          <div className="bg-white p-6 rounded-lg shadow">
-            <h3 className="text-gray-500 text-sm">Открытые тикеты</h3>
-            <p className="text-3xl font-bold">{statistics.tickets.open}</p>
-          </div>
+      {activeTab === 'overview' && (
+        <div className="space-y-8">
+          {statsError ? (
+            <div className="rounded-lg border border-red-200 bg-red-50 p-6 text-red-700">
+              <p className="font-semibold">{statsError}</p>
+              <p className="text-sm text-red-600/80">
+                Попробуйте обновить данные или проверьте работу API администратора.
+              </p>
+            </div>
+          ) : stats ? (
+            <>
+              <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+                <article className="rounded-lg bg-white p-6 shadow">
+                  <p className="text-sm text-gray-500">Клиенты</p>
+                  <p className="mt-2 text-3xl font-semibold text-gray-900">
+                    {formatNumber(stats.users.total)}
+                  </p>
+                </article>
+
+                <article className="rounded-lg bg-white p-6 shadow">
+                  <p className="text-sm text-gray-500">Хранилища</p>
+                  <p className="mt-2 text-3xl font-semibold text-gray-900">
+                    {formatNumber(stats.servers.total)}
+                  </p>
+                  <p className="mt-2 text-xs text-gray-500">
+                    Активных: {formatNumber(stats.servers.active)} · Grace: {formatNumber(stats.servers.grace)} · Приостановлено: {formatNumber(stats.servers.suspended)}
+                  </p>
+                </article>
+
+                <article className="rounded-lg bg-white p-6 shadow">
+                  <p className="text-sm text-gray-500">Баланс системы</p>
+                  <p className="mt-2 text-3xl font-semibold text-gray-900">
+                    {formatCurrency(stats.balance.total)}
+                  </p>
+                </article>
+
+                <article className="rounded-lg bg-white p-6 shadow">
+                  <p className="text-sm text-gray-500">Проблемы</p>
+                  <p className="mt-2 text-lg font-semibold text-gray-900">
+                    Чеки: {formatNumber(stats.checks.pending)} · Тикеты: {formatNumber(stats.tickets.open)}
+                  </p>
+                </article>
+              </div>
+
+              <div className="grid gap-4 lg:grid-cols-2">
+                <section className="rounded-lg bg-white p-6 shadow">
+                  <h2 className="mb-4 text-lg font-semibold text-gray-900">Хранилище</h2>
+                  <dl className="space-y-2 text-sm text-gray-600">
+                    <div className="flex justify-between">
+                      <dt>Всего бакетов</dt>
+                      <dd>{formatNumber(stats.storage.total)}</dd>
+                    </div>
+                    <div className="flex justify-between">
+                      <dt>Публичных бакетов</dt>
+                      <dd>{formatNumber(stats.storage.public)}</dd>
+                    </div>
+                    <div className="flex justify-between">
+                      <dt>Объектов</dt>
+                      <dd>{formatNumber(stats.storage.objects)}</dd>
+                    </div>
+                    <div className="flex justify-between">
+                      <dt>Использовано</dt>
+                      <dd>{formatBytes(stats.storage.usedBytes)}</dd>
+                    </div>
+                    <div className="flex justify-between">
+                      <dt>Выделено по тарифам</dt>
+                      <dd>{formatNumber(stats.storage.quotaGb)} ГБ</dd>
+                    </div>
+                  </dl>
+                </section>
+
+                <section className="rounded-lg bg-white p-6 shadow">
+                  <h2 className="mb-4 text-lg font-semibold text-gray-900">Последние транзакции</h2>
+                  {stats.recentTransactions.length === 0 ? (
+                    <p className="text-sm text-gray-500">Транзакции отсутствуют.</p>
+                  ) : (
+                    <ul className="space-y-3 text-sm text-gray-700">
+                      {stats.recentTransactions.map((tx) => (
+                        <li key={tx.id} className="flex items-center justify-between rounded border border-gray-100 px-3 py-2">
+                          <div>
+                            <p className="font-medium text-gray-900">{tx.description}</p>
+                            <p className="text-xs text-gray-500">
+                              {tx.user ? `${tx.user.username} · ${tx.user.email}` : 'Системная операция'}
+                            </p>
+                            <p className="text-xs text-gray-500">{formatDateTime(tx.createdAt)}</p>
+                          </div>
+                          <span
+                            className={`text-sm font-semibold ${
+                              tx.amount >= 0 ? 'text-green-600' : 'text-red-600'
+                            }`}
+                          >
+                            {tx.amount >= 0 ? '+' : ''}{formatCurrency(tx.amount)}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </section>
+              </div>
+            </>
+          ) : (
+            <div className="rounded-lg border border-gray-200 bg-white p-6 text-gray-500">
+              Данные статистики отсутствуют.
+            </div>
+          )}
         </div>
       )}
 
-      {/* Users Tab */}
       {activeTab === 'users' && (
-        <div className="bg-white rounded-lg shadow overflow-hidden">
-          <table className="min-w-full">
-            <thead className="bg-gray-50">
-              <tr>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">ID</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Имя</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Email</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Баланс</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Серверы</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Админ</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Действия</th>
-              </tr>
-            </thead>
-            <tbody className="bg-white divide-y divide-gray-200">
-              {users.map((user) => (
-                <tr key={user.id} className="hover:bg-gray-50">
-                  <td className="px-6 py-4 whitespace-nowrap text-sm">{user.id}</td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm">{user.username}</td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm">{user.email}</td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">{user.balance.toFixed(2)} ₽</td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm">{user._count.servers}</td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm">
-                    <span className={user.isAdmin ? 'text-green-600 font-medium' : 'text-gray-400'}>
-                      {user.isAdmin ? 'Да' : 'Нет'}
-                    </span>
-                  </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm space-x-2">
-                    <button
-                      onClick={() => { loadUserDetails(user.id); }}
-                      className="text-blue-600 hover:text-blue-800"
-                    >
-                      Детали
-                    </button>
-                    <button
-                      onClick={() => toggleAdmin(user.id, user.isAdmin)}
-                      className="text-purple-600 hover:text-purple-800"
-                    >
-                      {user.isAdmin ? 'Убрать админа' : 'Сделать админом'}
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+        <div className="space-y-6">
+          <div className="flex flex-col justify-between gap-4 rounded-lg border border-gray-200 bg-white p-4 shadow md:flex-row md:items-center">
+            <div className="flex flex-1 items-center gap-3">
+              <input
+                value={searchTerm}
+                onChange={(event) => setSearchTerm(event.target.value)}
+                placeholder="Поиск по имени, email или ID"
+                className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-400 md:max-w-sm"
+              />
+              <button
+                onClick={() => {
+                  const headers = getAuthHeaders();
+                  if (!headers) {
+                    return;
+                  }
+                  void loadUsers(headers);
+                }}
+                className="hidden rounded border border-gray-300 px-3 py-2 text-sm text-gray-600 transition hover:border-gray-400 hover:text-gray-800 md:block"
+              >
+                Обновить список
+              </button>
+            </div>
+            <div className="text-sm text-gray-500">
+              Найдено пользователей: {formatNumber(filteredUsers.length)}
+            </div>
+          </div>
+
+          {usersError ? (
+            <div className="rounded-lg border border-red-200 bg-red-50 p-6 text-red-700">
+              <p className="font-semibold">{usersError}</p>
+            </div>
+          ) : (
+            <div className="overflow-hidden rounded-lg border border-gray-200 bg-white shadow">
+              <table className="min-w-full divide-y divide-gray-200 text-sm">
+                <thead className="bg-gray-50 text-xs font-semibold uppercase tracking-wide text-gray-500">
+                  <tr>
+                    <th className="px-4 py-3 text-left">Пользователь</th>
+                    <th className="px-4 py-3 text-left">Email</th>
+                    <th className="px-4 py-3 text-left">Баланс</th>
+                    <th className="px-4 py-3 text-left">Сервера</th>
+                    <th className="px-4 py-3 text-left">Тикеты</th>
+                    <th className="px-4 py-3 text-left">Роли</th>
+                    <th className="px-4 py-3 text-right">Действия</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100 text-gray-700">
+                  {filteredUsers.length === 0 ? (
+                    <tr>
+                      <td className="px-4 py-6 text-center text-gray-500" colSpan={7}>
+                        Пользователи не найдены.
+                      </td>
+                    </tr>
+                  ) : (
+                    filteredUsers.map((user) => {
+                      const busy = roleUpdating[user.id] || deletingUserId === user.id;
+                      return (
+                        <tr key={user.id} className="hover:bg-gray-50">
+                          <td className="px-4 py-3">
+                            <div className="font-medium text-gray-900">{user.username}</div>
+                            <div className="text-xs text-gray-500">ID {user.id} · {formatDateTime(user.createdAt)}</div>
+                          </td>
+                          <td className="px-4 py-3 text-gray-600">{user.email}</td>
+                          <td
+                            className={`px-4 py-3 font-medium ${
+                              user.balance >= 0 ? 'text-gray-900' : 'text-red-600'
+                            }`}
+                          >
+                            {formatCurrency(user.balance)}
+                          </td>
+                          <td className="px-4 py-3">{formatNumber(user._count.buckets ?? 0)}</td>
+                          <td className="px-4 py-3">{formatNumber(user._count.tickets ?? 0)}</td>
+                          <td className="px-4 py-3">
+                            <div className="flex flex-wrap items-center gap-2 text-xs">
+                              <span className={`rounded px-2 py-0.5 font-medium ${user.isAdmin ? 'bg-purple-100 text-purple-700' : 'bg-gray-100 text-gray-500'}`}>
+                                Админ
+                              </span>
+                              <span className={`rounded px-2 py-0.5 font-medium ${user.operator ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-500'}`}>
+                                Оператор
+                              </span>
+                            </div>
+                          </td>
+                          <td className="px-4 py-3">
+                            <div className="flex justify-end gap-2 text-xs font-medium">
+                              <button
+                                onClick={() => void openUserDetails(user.id)}
+                                className="text-blue-600 hover:text-blue-800"
+                              >
+                                Подробнее
+                              </button>
+                              <button
+                                onClick={() => void handleToggleAdmin(user)}
+                                disabled={busy}
+                                className="text-purple-600 hover:text-purple-800 disabled:opacity-50"
+                              >
+                                {user.isAdmin ? 'Снять админа' : 'Дать админа'}
+                              </button>
+                              <button
+                                onClick={() => void handleToggleOperator(user)}
+                                disabled={busy}
+                                className="text-indigo-600 hover:text-indigo-800 disabled:opacity-50"
+                              >
+                                {user.operator ? 'Снять оператора' : 'Дать оператора'}
+                              </button>
+                              <button
+                                onClick={() => void handleDeleteUser(user)}
+                                disabled={busy}
+                                className="text-red-600 hover:text-red-800 disabled:opacity-50"
+                              >
+                                {deletingUserId === user.id ? 'Удаляем...' : 'Удалить'}
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })
+                  )}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
       )}
 
-      {/* User Details Modal */}
-      {selectedUser && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 overflow-y-auto">
-          <div className="bg-white rounded-lg p-8 max-w-4xl w-full mx-4 my-8 max-h-[90vh] overflow-y-auto">
-            <div className="flex justify-between items-center mb-6">
-              <h2 className="text-2xl font-bold">
-                {selectedUser.username} (ID: {selectedUser.id})
-              </h2>
+      {balanceModal.open && selectedUser && (
+        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/50 p-4">
+          <div className="w-full max-w-md rounded-lg bg-white p-6 shadow-xl">
+            <h2 className="text-xl font-semibold text-gray-900">
+              {balanceModal.mode === 'add' ? 'Пополнить баланс' : 'Списать с баланса'}
+            </h2>
+            <p className="mt-2 text-sm text-gray-500">
+              Пользователь: {selectedUser.username} · Текущий баланс: {formatCurrency(selectedUser.balance)}
+            </p>
+
+            <div className="mt-6 space-y-4">
+              <label className="block text-sm font-medium text-gray-700">
+                Сумма (₽)
+                <input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={balanceModal.amount}
+                  onChange={(event) =>
+                    setBalanceModal((prev) => ({ ...prev, amount: event.target.value }))
+                  }
+                  className="mt-1 w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-400"
+                  placeholder="0.00"
+                />
+              </label>
+
+              <label className="block text-sm font-medium text-gray-700">
+                Комментарий для пользователя
+                <textarea
+                  value={balanceModal.description}
+                  onChange={(event) =>
+                    setBalanceModal((prev) => ({ ...prev, description: event.target.value }))
+                  }
+                  rows={3}
+                  className="mt-1 w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-400"
+                  placeholder="Причина изменения баланса"
+                />
+              </label>
+            </div>
+
+            <div className="mt-6 flex justify-end gap-3">
               <button
-                onClick={() => setSelectedUser(null)}
-                className="text-gray-500 hover:text-gray-700 text-2xl"
+                onClick={() =>
+                  setBalanceModal({ open: false, mode: 'add', amount: '', description: '', submitting: false })
+                }
+                disabled={balanceModal.submitting}
+                className="rounded border border-gray-300 px-4 py-2 text-sm text-gray-600 hover:border-gray-400 hover:text-gray-800"
+              >
+                Отмена
+              </button>
+              <button
+                onClick={() => void submitBalanceChange()}
+                disabled={balanceModal.submitting}
+                className="rounded bg-green-600 px-4 py-2 text-sm font-semibold text-white hover:bg-green-700 disabled:cursor-not-allowed disabled:bg-green-400"
+              >
+                {balanceModal.submitting ? 'Сохраняем...' : 'Подтвердить'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {selectedUserId && (
+        <div className="fixed inset-0 z-30 flex items-center justify-center bg-black/40 p-4">
+          <div className="max-h-[90vh] w-full max-w-5xl overflow-y-auto rounded-lg bg-white p-6 shadow-2xl">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h2 className="text-2xl font-semibold text-gray-900">
+                  {selectedUser?.username || 'Профиль пользователя'}
+                </h2>
+                <p className="text-sm text-gray-500">
+                  ID {selectedUserId}
+                  {selectedUser?.email ? ` · ${selectedUser.email}` : ''}
+                </p>
+              </div>
+              <button
+                onClick={closeUserDetails}
+                className="text-2xl leading-none text-gray-400 transition hover:text-gray-600"
               >
                 ×
               </button>
             </div>
 
-            <div className="grid grid-cols-2 gap-4 mb-6">
-              <div>
-                <p className="text-gray-600">Email:</p>
-                <p className="font-medium">{selectedUser.email}</p>
+            {selectedUserLoading ? (
+              <div className="mt-10 flex justify-center">
+                <span className="h-10 w-10 animate-spin rounded-full border-4 border-blue-600 border-t-transparent" />
               </div>
-              <div>
-                <p className="text-gray-600">Баланс:</p>
-                <p className="font-medium text-2xl">{selectedUser.balance.toFixed(2)} ₽</p>
-              </div>
-            </div>
-
-            <div className="flex gap-4 mb-6">
-              <button
-                onClick={() => { setBalanceAction('add'); setShowBalanceModal(true); }}
-                className="px-4 py-2 bg-green-500 text-white rounded hover:bg-green-600"
-              >
-                Пополнить баланс
-              </button>
-              <button
-                onClick={() => { setBalanceAction('withdraw'); setShowBalanceModal(true); }}
-                className="px-4 py-2 bg-red-500 text-white rounded hover:bg-red-600"
-              >
-                Списать с баланса
-              </button>
-            </div>
-
-            {/* Servers */}
-            <h3 className="text-xl font-bold mb-4">Серверы ({selectedUser.servers.length})</h3>
-            <div className="space-y-4 mb-6">
-              {selectedUser.servers.map((server) => (
-                <div key={server.id} className="border p-4 rounded">
-                  <div className="flex justify-between items-center">
-                    <div>
-                      <p className="font-medium">Сервер #{server.id}</p>
-                      <p className="text-sm text-gray-600">
-                        {server.tariff.name} | {server.os.name} | {server.status}
-                      </p>
-                      <p className="text-sm text-gray-600">IP: {server.ipAddress || 'N/A'}</p>
-                      {server.nextPaymentDate && (
-                        <p className="text-sm text-gray-600">
-                          След. платёж: {new Date(server.nextPaymentDate).toLocaleDateString('ru-RU')}
-                        </p>
-                      )}
-                    </div>
-                    <button
-                      onClick={() => handleDeleteServer(server.id)}
-                      className="px-4 py-2 bg-red-500 text-white rounded hover:bg-red-600"
-                    >
-                      Удалить
-                    </button>
-                  </div>
-                </div>
-              ))}
-            </div>
-
-            {/* Transactions */}
-            <h3 className="text-xl font-bold mb-4">Последние транзакции</h3>
-            <div className="space-y-2">
-              {selectedUser.transactions?.slice(0, 10).map((tx) => (
-                <div key={tx.id} className="flex justify-between border-b pb-2">
-                  <div>
-                    <p className="font-medium">{tx.description}</p>
-                    <p className="text-sm text-gray-600">
-                      {new Date(tx.createdAt).toLocaleString('ru-RU')}
+            ) : selectedUser ? (
+              <div className="mt-6 space-y-8">
+                <section className="grid gap-4 md:grid-cols-3">
+                  <article className="rounded-lg border border-gray-200 p-4">
+                    <p className="text-xs uppercase text-gray-500">Баланс</p>
+                    <p className="mt-1 text-xl font-semibold text-gray-900">
+                      {formatCurrency(selectedUser.balance)}
                     </p>
+                    <div className="mt-3 flex gap-2 text-xs">
+                      <button
+                        onClick={() => openBalanceDialog('add')}
+                        className="rounded bg-green-100 px-3 py-1 font-semibold text-green-700 hover:bg-green-200"
+                      >
+                        Пополнить
+                      </button>
+                      <button
+                        onClick={() => openBalanceDialog('withdraw')}
+                        className="rounded bg-red-100 px-3 py-1 font-semibold text-red-700 hover:bg-red-200"
+                      >
+                        Списать
+                      </button>
+                    </div>
+                  </article>
+                  <article className="rounded-lg border border-gray-200 p-4">
+                    <p className="text-xs uppercase text-gray-500">Роли</p>
+                    <div className="mt-2 flex flex-wrap gap-2 text-sm">
+                      <span className={`rounded px-3 py-1 font-medium ${selectedUser.isAdmin ? 'bg-purple-100 text-purple-700' : 'bg-gray-100 text-gray-500'}`}>
+                        Администратор
+                      </span>
+                      <span className={`rounded px-3 py-1 font-medium ${selectedUser.operator ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-500'}`}>
+                        Оператор
+                      </span>
+                    </div>
+                    <div className="mt-3 flex flex-wrap gap-2 text-xs">
+                      <button
+                        onClick={() => void handleToggleAdmin(selectedUser)}
+                        disabled={roleUpdating[selectedUser.id]}
+                        className="rounded border border-purple-300 px-3 py-1 font-semibold text-purple-600 hover:border-purple-400 disabled:opacity-50"
+                      >
+                        {selectedUser.isAdmin ? 'Снять админа' : 'Сделать админом'}
+                      </button>
+                      <button
+                        onClick={() => void handleToggleOperator(selectedUser)}
+                        disabled={roleUpdating[selectedUser.id]}
+                        className="rounded border border-blue-300 px-3 py-1 font-semibold text-blue-600 hover:border-blue-400 disabled:opacity-50"
+                      >
+                        {selectedUser.operator ? 'Снять оператора' : 'Сделать оператором'}
+                      </button>
+                    </div>
+                  </article>
+                  <article className="rounded-lg border border-gray-200 p-4">
+                    <p className="text-xs uppercase text-gray-500">Создан</p>
+                    <p className="mt-2 text-sm text-gray-700">{formatDateTime(selectedUser.createdAt)}</p>
+                  </article>
+                </section>
+
+                <section>
+                  <div className="mb-3 flex items-center justify-between">
+                    <h3 className="text-lg font-semibold text-gray-900">
+                      Серверы ({selectedUser.buckets.length})
+                    </h3>
                   </div>
-                  <p className={`font-bold ${tx.amount > 0 ? 'text-green-600' : 'text-red-600'}`}>
-                    {tx.amount > 0 ? '+' : ''}{tx.amount.toFixed(2)} ₽
-                  </p>
+                  {selectedUser.buckets.length === 0 ? (
+                    <p className="rounded border border-gray-200 bg-gray-50 p-4 text-sm text-gray-500">
+                      У пользователя нет активных серверов.
+                    </p>
+                  ) : (
+                    <div className="grid gap-3 md:grid-cols-2">
+                      {selectedUser.buckets.map((bucket) => (
+                        <article key={bucket.id} className="rounded border border-gray-200 p-4">
+                          <div className="flex items-start justify-between">
+                            <div>
+                              <h4 className="text-sm font-semibold text-gray-900">{bucket.name}</h4>
+                              <p className="text-xs text-gray-500">
+                                ID {bucket.id} · {bucket.region || 'регион не указан'} · {bucket.storageClass || 'класс не указан'}
+                              </p>
+                            </div>
+                            <span className={`rounded px-2 py-0.5 text-xs font-semibold ${
+                              bucket.status === 'active'
+                                ? 'bg-green-100 text-green-700'
+                                : bucket.status === 'grace'
+                                ? 'bg-yellow-100 text-yellow-600'
+                                : 'bg-red-100 text-red-700'
+                            }`}>
+                              {bucket.status}
+                            </span>
+                          </div>
+                          <dl className="mt-3 space-y-1 text-xs text-gray-600">
+                            <div className="flex justify-between">
+                              <dt>Использование</dt>
+                              <dd>{formatBytes(bucket.usedBytes)} / {bucket.quotaGb} ГБ</dd>
+                            </div>
+                            <div className="flex justify-between">
+                              <dt>Оплата</dt>
+                              <dd>{bucket.monthlyPrice ? formatCurrency(bucket.monthlyPrice) : '—'} / мес</dd>
+                            </div>
+                            <div className="flex justify-between">
+                              <dt>Следующая оплата</dt>
+                              <dd>{formatDateTime(bucket.nextBillingDate)}</dd>
+                            </div>
+                          </dl>
+                          <button
+                            onClick={() => void handleDeleteBucket(bucket)}
+                            disabled={deletingBucketId === bucket.id}
+                            className="mt-3 w-full rounded bg-red-50 px-3 py-2 text-xs font-semibold text-red-600 hover:bg-red-100 disabled:cursor-not-allowed disabled:bg-red-200"
+                          >
+                            {deletingBucketId === bucket.id ? 'Удаляем...' : 'Удалить сервер'}
+                          </button>
+                        </article>
+                      ))}
+                    </div>
+                  )}
+                </section>
+
+                <section className="grid gap-4 lg:grid-cols-2">
+                  <article className="rounded-lg border border-gray-200 p-4">
+                    <h3 className="text-lg font-semibold text-gray-900">
+                      Последние тикеты ({selectedUser.tickets.length})
+                    </h3>
+                    {selectedUser.tickets.length === 0 ? (
+                      <p className="mt-3 text-sm text-gray-500">Тикетов нет.</p>
+                    ) : (
+                      <ul className="mt-3 space-y-3 text-sm text-gray-700">
+                        {selectedUser.tickets.map((ticket) => (
+                          <li key={ticket.id} className="rounded border border-gray-100 px-3 py-2">
+                            <p className="font-medium text-gray-900">{ticket.title}</p>
+                            <p className="text-xs text-gray-500">
+                              Статус: {ticket.status} · Приоритет: {ticket.priority}
+                            </p>
+                            <p className="text-xs text-gray-500">{formatDateTime(ticket.createdAt)}</p>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </article>
+
+                  <article className="rounded-lg border border-gray-200 p-4">
+                    <h3 className="text-lg font-semibold text-gray-900">
+                      Чеки ({selectedUser.checks.length})
+                    </h3>
+                    {selectedUser.checks.length === 0 ? (
+                      <p className="mt-3 text-sm text-gray-500">Чеки отсутствуют.</p>
+                    ) : (
+                      <ul className="mt-3 space-y-3 text-sm text-gray-700">
+                        {selectedUser.checks.map((check) => (
+                          <li key={check.id} className="flex items-center justify-between rounded border border-gray-100 px-3 py-2">
+                            <div>
+                              <p className="font-medium text-gray-900">{formatCurrency(check.amount)}</p>
+                              <p className="text-xs text-gray-500">{formatDateTime(check.createdAt)}</p>
+                            </div>
+                            <span className={`rounded px-2 py-0.5 text-xs font-semibold ${
+                              check.status === 'approved'
+                                ? 'bg-green-100 text-green-700'
+                                : check.status === 'pending'
+                                ? 'bg-yellow-100 text-yellow-600'
+                                : 'bg-red-100 text-red-700'
+                            }`}>
+                              {check.status}
+                            </span>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </article>
+                </section>
+
+                <section className="rounded-lg border border-gray-200 p-4">
+                  <h3 className="text-lg font-semibold text-gray-900">
+                    Транзакции ({selectedUser.transactions.length})
+                  </h3>
+                  {selectedUser.transactions.length === 0 ? (
+                    <p className="mt-3 text-sm text-gray-500">Транзакции отсутствуют.</p>
+                  ) : (
+                    <div className="mt-3 overflow-hidden rounded border border-gray-100">
+                      <table className="min-w-full text-sm">
+                        <thead className="bg-gray-50 text-xs uppercase tracking-wide text-gray-500">
+                          <tr>
+                            <th className="px-3 py-2 text-left">Описание</th>
+                            <th className="px-3 py-2 text-left">Сумма</th>
+                            <th className="px-3 py-2 text-left">Дата</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-gray-100 text-gray-700">
+                          {selectedUser.transactions.map((tx) => (
+                            <tr key={tx.id}>
+                              <td className="px-3 py-2">{tx.description}</td>
+                              <td className={`px-3 py-2 font-semibold ${
+                                tx.amount >= 0 ? 'text-green-600' : 'text-red-600'
+                              }`}>
+                                {tx.amount >= 0 ? '+' : ''}{formatCurrency(tx.amount)}
+                              </td>
+                              <td className="px-3 py-2 text-xs text-gray-500">{formatDateTime(tx.createdAt)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </section>
+
+                <div className="flex justify-end">
+                  <button
+                    onClick={() => void handleDeleteUser(selectedUser)}
+                    disabled={deletingUserId === selectedUser.id}
+                    className="rounded bg-red-600 px-4 py-2 text-sm font-semibold text-white hover:bg-red-700 disabled:cursor-not-allowed disabled:bg-red-400"
+                  >
+                    {deletingUserId === selectedUser.id ? 'Удаляем...' : 'Удалить пользователя'}
+                  </button>
                 </div>
-              ))}
-            </div>
+              </div>
+            ) : (
+              <div className="mt-10 rounded border border-gray-200 bg-gray-50 p-6 text-center text-gray-500">
+                Данные пользователя недоступны.
+              </div>
+            )}
           </div>
         </div>
       )}
 
-      {/* Balance Change Modal */}
-      {showBalanceModal && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-lg p-8 max-w-md w-full mx-4">
-            <h2 className="text-2xl font-bold mb-4">
-              {balanceAction === 'add' ? 'Пополнить баланс' : 'Списать с баланса'}
-            </h2>
-            
-            <div className="space-y-4">
-              <div>
-                <label className="block text-sm font-medium mb-2">Сумма (₽)</label>
-                <input
-                  type="number"
-                  value={balanceAmount}
-                  onChange={(e) => setBalanceAmount(e.target.value)}
-                  className="w-full px-4 py-2 border rounded"
-                  placeholder="0.00"
-                  min="0"
-                  step="0.01"
-                />
-              </div>
+      {activeTab === 'pricing' && (
+        <div>
+          <AdminPricingTab />
+        </div>
+      )}
 
-              <div>
-                <label className="block text-sm font-medium mb-2">Описание</label>
-                <textarea
-                  value={balanceDescription}
-                  onChange={(e) => setBalanceDescription(e.target.value)}
-                  className="w-full px-4 py-2 border rounded"
-                  placeholder="Причина пополнения/списания"
-                  rows={3}
-                />
-              </div>
-            </div>
-
-            <div className="flex gap-4 mt-6">
-              <button
-                onClick={handleBalanceChange}
-                className={`px-4 py-2 text-white rounded flex-1 ${
-                  balanceAction === 'add' 
-                    ? 'bg-green-500 hover:bg-green-600' 
-                    : 'bg-red-500 hover:bg-red-600'
-                }`}
-              >
-                Подтвердить
-              </button>
-              <button
-                onClick={() => {
-                  setShowBalanceModal(false);
-                  setBalanceAmount('');
-                  setBalanceDescription('');
-                }}
-                className="px-4 py-2 bg-gray-500 text-white rounded hover:bg-gray-600"
-              >
-                Отмена
-              </button>
-            </div>
-          </div>
+      {activeTab === 'testing' && (
+        <div>
+          <AdminTestingTab />
         </div>
       )}
     </div>

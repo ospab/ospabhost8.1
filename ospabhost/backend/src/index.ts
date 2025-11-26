@@ -20,19 +20,59 @@ dotenv.config();
 
 const app = express();
 
+app.set('trust proxy', 1);
+
+const allowedOrigins = Array.from(new Set([
+  process.env.PUBLIC_APP_ORIGIN,
+  process.env.PUBLIC_API_ORIGIN,
+  'http://localhost:3000',
+  'http://localhost:5173',
+  'https://ospab.host',
+  'https://api.ospab.host'
+].filter((origin): origin is string => Boolean(origin))));
+
+const stripTrailingSlash = (value: string) => (value.endsWith('/') ? value.slice(0, -1) : value);
+
+const deriveWebsocketUrl = (origin: string) => {
+  try {
+    const url = new URL(origin);
+    url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+    url.pathname = '/ws';
+    url.search = '';
+    url.hash = '';
+    return url.toString();
+  } catch (error) {
+    logger.warn('[Server] Не удалось сконструировать WS URL, возвращаем origin как есть', error);
+    return origin;
+  }
+};
+
+const buildUrl = (origin: string, pathname: string) => {
+  try {
+    const url = new URL(origin);
+    url.pathname = pathname;
+    url.search = '';
+    url.hash = '';
+    return url.toString();
+  } catch {
+    return `${stripTrailingSlash(origin)}${pathname}`;
+  }
+};
+
 app.use(cors({
-  origin: [
-    'http://localhost:3000',
-    'http://localhost:5173',
-    'https://ospab.host'
-  ],
+  origin: allowedOrigins,
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
 
-app.use(express.json());
+app.use(express.json({ limit: '100mb' }));
+app.use(express.urlencoded({ limit: '100mb', extended: true }));
 app.use(passport.initialize());
+
+app.get('/health', (_req, res) => {
+  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+});
 
 app.get('/', async (req, res) => {
   // Статистика WebSocket
@@ -164,6 +204,9 @@ const keyPath = process.env.SSL_KEY_PATH ?? '/etc/apache2/ssl/ospab.host.key';
 const certPath = process.env.SSL_CERT_PATH ?? '/etc/apache2/ssl/ospab.host.fullchain.crt';
 
 const shouldUseHttps = process.env.NODE_ENV === 'production';
+const PUBLIC_API_ORIGIN = process.env.PUBLIC_API_ORIGIN || (shouldUseHttps ? 'https://api.ospab.host' : `http://localhost:${PORT}`);
+const normalizedApiOrigin = stripTrailingSlash(PUBLIC_API_ORIGIN);
+const PUBLIC_WS_URL = process.env.PUBLIC_WS_URL || deriveWebsocketUrl(PUBLIC_API_ORIGIN);
 
 let server: http.Server | https.Server;
 let protocolLabel = 'HTTP';
@@ -199,10 +242,14 @@ if (shouldUseHttps) {
 // Инициализация основного WebSocket сервера для real-time обновлений
 const wss = initWebSocketServer(server);
 
+// Установка timeout для всех запросов (120 сек = 120000 мс)
+server.setTimeout(120000);
+
 server.listen(PORT, () => {
   logger.info(`${protocolLabel} сервер запущен на порту ${PORT}`);
   logger.info(`База данных: ${process.env.DATABASE_URL ? 'подключена' : 'НЕ НАСТРОЕНА'}`);
-  logger.info(`WebSocket доступен: ${protocolLabel === 'HTTPS' ? 'wss' : 'ws'}://ospab.host:${PORT}/ws`);
-  logger.info(`Sitemap доступен: ${protocolLabel === 'HTTPS' ? 'https' : 'http'}://ospab.host:${PORT}/sitemap.xml`);
-  logger.info(`Robots.txt доступен: ${protocolLabel === 'HTTPS' ? 'https' : 'http'}://ospab.host:${PORT}/robots.txt`);
+  logger.info(`API доступен: ${normalizedApiOrigin}`);
+  logger.info(`WebSocket доступен: ${PUBLIC_WS_URL}`);
+  logger.info(`Sitemap доступен: ${buildUrl(normalizedApiOrigin, '/sitemap.xml')}`);
+  logger.info(`Robots.txt доступен: ${buildUrl(normalizedApiOrigin, '/robots.txt')}`);
 });

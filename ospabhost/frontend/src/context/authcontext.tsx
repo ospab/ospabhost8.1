@@ -1,5 +1,5 @@
 // /src/context/authcontext.tsx
-import { createContext, useState, useEffect } from 'react';
+import { createContext, useState, useEffect, useRef } from 'react';
 import type { ReactNode } from 'react';
 
 import apiClient from '../utils/apiClient';
@@ -35,6 +35,7 @@ export const AuthProvider = ({ children }: AuthProviderProps) => {
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [userData, setUserData] = useState<UserData | null>(null);
   const [isInitialized, setIsInitialized] = useState(false);
+  const manualLogoutRef = useRef(false);
 
   const bootstrapSession = async () => {
     const token = localStorage.getItem('access_token');
@@ -69,9 +70,14 @@ export const AuthProvider = ({ children }: AuthProviderProps) => {
 
     // Слушаем событие unauthorized из apiClient
     const handleUnauthorized = () => {
+      if (manualLogoutRef.current) {
+        manualLogoutRef.current = false;
+        return;
+      }
+
       setIsLoggedIn(false);
       setUserData(null);
-      window.location.href = '/401';
+      window.location.href = '/login';
     };
     
     window.addEventListener('unauthorized', handleUnauthorized);
@@ -88,9 +94,15 @@ export const AuthProvider = ({ children }: AuthProviderProps) => {
   };
 
   const logout = () => {
+    manualLogoutRef.current = true;
     localStorage.removeItem('access_token');
+    sessionStorage.clear();
     setIsLoggedIn(false);
     setUserData(null);
+
+    window.setTimeout(() => {
+      manualLogoutRef.current = false;
+    }, 1500);
   };
 
   const refreshUser = async () => {

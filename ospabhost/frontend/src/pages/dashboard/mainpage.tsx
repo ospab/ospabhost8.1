@@ -7,14 +7,14 @@ import AuthContext from '../../context/authcontext';
 
 // Импортируем компоненты для вкладок
 import Summary from './summary';
-import TicketsPage from './tickets';
+import TicketsPage from './tickets/index';
 import Billing from './billing';
 import Settings from './settings';
 import NotificationsPage from './notifications';
 import CheckVerification from './checkverification';
-import TicketResponse from './ticketresponse';
 import Checkout from './checkout';
 import StoragePage from './storage';
+import StorageBucketPage from './storage-bucket';
 import AdminPanel from './admin';
 import BlogAdmin from './blogadmin';
 import BlogEditor from './blogeditor';
@@ -115,7 +115,6 @@ const Dashboard = () => {
   ];
   const adminTabs = [
     { key: 'checkverification', label: 'Проверка чеков', to: '/dashboard/checkverification' },
-    { key: 'ticketresponse', label: 'Ответы на тикеты', to: '/dashboard/ticketresponse' },
   ];
   
   const superAdminTabs = [
@@ -257,10 +256,11 @@ const Dashboard = () => {
           <Routes>
             <Route path="/" element={<Summary userData={userData ?? { user: { username: '', operator: 0 }, balance: 0, tickets: [] }} />} />
             <Route path="storage" element={<StoragePage />} />
-            <Route path="checkout" element={<Checkout onSuccess={() => navigate('/dashboard/storage')} />} />
+            <Route path="storage/:bucketId" element={<StorageBucketPage />} />
+            <Route path="checkout" element={<Checkout />} />
             {userData && (
               <>
-                <Route path="tickets" element={<TicketsPage setUserData={setUserData} />} />
+                <Route path="tickets" element={<TicketsPage />} />
                 <Route path="tickets/:id" element={<TicketDetailPage />} />
                 <Route path="tickets/new" element={<NewTicketPage />} />
               </>
@@ -273,7 +273,6 @@ const Dashboard = () => {
             {isOperator && (
               <>
                 <Route path="checkverification" element={<CheckVerification />} />
-                <Route path="ticketresponse" element={<TicketResponse />} />
               </>
             )}
             {isAdmin && (

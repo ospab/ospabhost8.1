@@ -11,7 +11,7 @@ import {
 import { wsLogger } from '../utils/logger';
 
 const prisma = new PrismaClient();
-const JWT_SECRET = process.env.JWT_SECRET || 'your_super_secret_key';
+const JWT_SECRET = process.env.JWT_SECRET || 'i_love_WebSockets!';
 
 // Хранилище аутентифицированных клиентов
 const authenticatedClients = new Map<WebSocket, AuthenticatedClient>();

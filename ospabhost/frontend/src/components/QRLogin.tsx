@@ -13,8 +13,8 @@ const QRLogin: React.FC<QRLoginProps> = ({ onSuccess }) => {
   const { login } = useAuth();
   const [qrCode, setQrCode] = useState<string>('');
   const [status, setStatus] = useState<'generating' | 'waiting' | 'scanning' | 'expired' | 'error'>('generating');
-  const [pollingInterval, setPollingInterval] = useState<NodeJS.Timeout | null>(null);
-  const [refreshInterval, setRefreshInterval] = useState<NodeJS.Timeout | null>(null);
+  const [pollingInterval, setPollingInterval] = useState<ReturnType<typeof setInterval> | null>(null);
+  const [refreshInterval, setRefreshInterval] = useState<ReturnType<typeof setInterval> | null>(null);
   const qrLinkBase = typeof window !== 'undefined' ? window.location.origin : '';
 
   useEffect(() => {

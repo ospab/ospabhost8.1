@@ -1,45 +1,5 @@
 import { useEffect, useState } from 'react';
-import io from 'socket.io-client';
-import { SOCKET_URL } from '../config/api';
-
-type Socket = SocketIOClient.Socket;
-
-export function useSocket() {
-  const [socket, setSocket] = useState<Socket | null>(null);
-  const [connected, setConnected] = useState(false);
-
-  useEffect(() => {
-    const socketInstance = io(SOCKET_URL, {
-      transports: ['websocket', 'polling'],
-      reconnection: true,
-      reconnectionDelay: 1000,
-      reconnectionAttempts: 5
-    });
-
-    socketInstance.on('connect', () => {
-      console.log('WebSocket connected');
-      setConnected(true);
-    });
-
-    socketInstance.on('disconnect', () => {
-      console.log('WebSocket disconnected');
-      setConnected(false);
-    });
-
-    socketInstance.on('connect_error', (error: Error) => {
-      console.error('WebSocket connection error:', error);
-    });
-
-    setSocket(socketInstance);
-
-    return () => {
-      socketInstance.close();
-    };
-  }, []);
-
-  return { socket, connected };
-}
-
+import { useWebSocket } from './useWebSocket';
 
 // Типы для статистики и алертов
 export interface ServerStats {
@@ -55,6 +15,9 @@ export interface ServerStats {
     in: number;
     out: number;
   };
+  // Дополнительные поля могут приходить из backend, поэтому допускаем произвольные ключи
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  [key: string]: any;
 }
 
 export interface ServerAlert {
@@ -63,46 +26,52 @@ export interface ServerAlert {
   level: 'warning' | 'info' | 'critical';
 }
 
-interface ServerStatsEvent {
-  serverId: number;
-  stats: ServerStats;
-}
-
-interface ServerAlertsEvent {
-  serverId: number;
-  alerts: ServerAlert[];
-}
-
 export function useServerStats(serverId: number | null) {
-  const { socket, connected } = useSocket();
+  const { isConnected, subscribe, unsubscribe } = useWebSocket();
   const [stats, setStats] = useState<ServerStats | null>(null);
   const [alerts, setAlerts] = useState<ServerAlert[]>([]);
 
   useEffect(() => {
-    if (!socket || !connected || !serverId) return;
+    if (!serverId) {
+      setStats(null);
+      setAlerts([]);
+      return;
+    }
 
-    socket.emit('subscribe-server', serverId);
+    // Сброс предыдущих данных при смене сервера
+    setStats(null);
+    setAlerts([]);
 
-    const handleStats = (data: ServerStatsEvent) => {
-      if (data.serverId === serverId) {
-        setStats(data.stats);
+    const handler: Parameters<typeof subscribe>[1] = (event) => {
+      switch (event.type) {
+        case 'server:stats':
+          if (event.serverId === serverId) {
+            setStats(event.stats as ServerStats);
+          }
+          break;
+        case 'server:status':
+          if (event.serverId === serverId) {
+            setStats((prev) => ({ ...(prev ?? {}), status: event.status }));
+          }
+          break;
+        case 'server:created':
+          // Если создан текущий сервер, сбрасываем статистику для повторной загрузки
+          if ((event.server as { id?: number })?.id === serverId) {
+            setStats(null);
+            setAlerts([]);
+          }
+          break;
+        default:
+          break;
       }
     };
-    const handleAlerts = (data: ServerAlertsEvent) => {
-      if (data.serverId === serverId) {
-        setAlerts(data.alerts);
-      }
-    };
 
-    socket.on('server-stats', handleStats);
-    socket.on('server-alerts', handleAlerts);
+    subscribe('servers', handler);
 
     return () => {
-      socket.emit('unsubscribe-server', serverId);
-      socket.off('server-stats', handleStats);
-      socket.off('server-alerts', handleAlerts);
+      unsubscribe('servers', handler);
     };
-  }, [socket, connected, serverId]);
+  }, [serverId, subscribe, unsubscribe]);
 
-  return { stats, alerts, connected };
+  return { stats, alerts, connected: isConnected };
 }

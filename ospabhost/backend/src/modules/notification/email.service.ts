@@ -4,6 +4,8 @@ import { logger } from '../../utils/logger';
 
 const prisma = new PrismaClient();
 
+const FRONTEND_URL = process.env.FRONTEND_URL || 'https://ospab.host';
+
 // Конфигурация email транспорта
 const transporter = nodemailer.createTransport({
   host: process.env.SMTP_HOST || 'smtp.gmail.com',
@@ -24,8 +26,10 @@ export interface EmailNotification {
   html?: string;
 }
 
+type SendEmailResult = { status: 'success'; messageId: string } | { status: 'skipped' | 'error'; message: string };
+
 // Отправка email уведомления
-export async function sendEmail(notification: EmailNotification) {
+export async function sendEmail(notification: EmailNotification): Promise<SendEmailResult> {
   try {
     // Проверяем наличие конфигурации SMTP
     if (!process.env.SMTP_USER || !process.env.SMTP_PASS) {
@@ -44,6 +48,72 @@ export async function sendEmail(notification: EmailNotification) {
     logger.error('Error sending email:', error);
     return { status: 'error', message: error.message };
   }
+}
+
+const isAbsoluteUrl = (url: string) => /^https?:\/\//i.test(url);
+
+const resolveActionUrl = (actionUrl?: string): string | null => {
+  if (!actionUrl) return null;
+  if (isAbsoluteUrl(actionUrl)) return actionUrl;
+
+  const normalizedBase = FRONTEND_URL.endsWith('/') ? FRONTEND_URL.slice(0, -1) : FRONTEND_URL;
+  const normalizedPath = actionUrl.startsWith('/') ? actionUrl : `/${actionUrl}`;
+
+  return `${normalizedBase}${normalizedPath}`;
+};
+
+export interface SendGenericNotificationEmailParams {
+  to: string;
+  username?: string | null;
+  title: string;
+  message: string;
+  actionUrl?: string;
+  type?: string;
+}
+
+export async function sendNotificationEmail(params: SendGenericNotificationEmailParams) {
+  const { to, username, title, message, actionUrl } = params;
+
+  const resolvedActionUrl = resolveActionUrl(actionUrl);
+  const subject = `[Ospab Host] ${title}`.trim();
+
+  const plainTextLines = [
+    `Здравствуйте${username ? `, ${username}` : ''}!`,
+    '',
+    message,
+  ];
+
+  if (resolvedActionUrl) {
+    plainTextLines.push('', `Перейти: ${resolvedActionUrl}`);
+  }
+
+  plainTextLines.push('', '— Команда Ospab Host');
+
+  const html = `
+    <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #1f2933;">
+      <p>Здравствуйте${username ? `, ${username}` : ''}!</p>
+      <p>${message}</p>
+      ${resolvedActionUrl ? `
+        <p>
+          <a href="${resolvedActionUrl}" style="display: inline-block; padding: 10px 18px; background-color: #4f46e5; color: #ffffff; border-radius: 6px; text-decoration: none;">
+            Открыть в панели
+          </a>
+        </p>
+        <p style="font-size: 12px; color: #6b7280;">Если кнопка не работает, скопируйте ссылку:
+          <br><a href="${resolvedActionUrl}" style="color: #4f46e5;">${resolvedActionUrl}</a>
+        </p>
+      ` : ''}
+      <p style="margin-top: 24px; font-size: 12px; color: #6b7280;">Это автоматическое письмо. Не отвечайте на него.</p>
+      <p style="font-size: 12px; color: #6b7280;">— Команда Ospab Host</p>
+    </div>
+  `;
+
+  return sendEmail({
+    to,
+    subject,
+    text: plainTextLines.join('\n'),
+    html,
+  });
 }
 
 // Отправка уведомления о высокой нагрузке

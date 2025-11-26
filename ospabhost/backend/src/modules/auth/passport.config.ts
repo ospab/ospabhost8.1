@@ -1,3 +1,6 @@
+import dotenv from 'dotenv';
+dotenv.config();
+
 import passport from 'passport';
 import { Strategy as GoogleStrategy } from 'passport-google-oauth20';
 import { Strategy as GitHubStrategy } from 'passport-github';
@@ -6,7 +9,7 @@ import { PrismaClient } from '@prisma/client';
 
 const prisma = new PrismaClient();
 const JWT_SECRET = process.env.JWT_SECRET || 'your_super_secret_key';
-const OAUTH_CALLBACK_URL = process.env.OAUTH_CALLBACK_URL || 'http://localhost:5000/api/auth';
+const OAUTH_CALLBACK_URL = process.env.OAUTH_CALLBACK_URL || 'https://api.ospab.host/api/auth';
 
 interface OAuthProfile {
   id: string;
@@ -120,6 +123,7 @@ if (process.env.YANDEX_CLIENT_ID && process.env.YANDEX_CLIENT_SECRET) {
     )
   );
 }
+
 
 passport.serializeUser((user: any, done) => {
   done(null, user.id);

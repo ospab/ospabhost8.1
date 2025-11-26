@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useEffect, useRef, useState, useCallback } from 'react';
 import AuthContext from './authcontext';
 import { wsLogger } from '../utils/logger';
+import { SOCKET_URL } from '../config/api';
 
 // Типы событий (синхронизированы с backend)
 type RoomType = 'notifications' | 'servers' | 'tickets' | 'balance';
@@ -16,6 +17,7 @@ type ServerToClientEvent =
   | { type: 'notification:delete'; notificationId: number }
   | { type: 'server:created'; server: AnyObject }
   | { type: 'server:status'; serverId: number; status: string; ipAddress?: string }
+  | { type: 'server:stats'; serverId: number; stats: AnyObject }
   | { type: 'server:deleted'; serverId: number }
   | { type: 'ticket:new'; ticket: AnyObject }
   | { type: 'ticket:response'; ticketId: number; response: AnyObject }
@@ -46,13 +48,13 @@ interface WebSocketProviderProps {
 
 export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({ 
   children, 
-  url = 'wss://ospab.host:5000/ws' 
+  url = SOCKET_URL 
 }) => {
   const authContext = useContext(AuthContext);
   const token = authContext?.isLoggedIn ? localStorage.getItem('access_token') : null;
   const [isConnected, setIsConnected] = useState(false);
   const wsRef = useRef<WebSocket | null>(null);
-  const reconnectTimeoutRef = useRef<NodeJS.Timeout>();
+  const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const handlersRef = useRef<Map<RoomType, Set<MessageHandler>>>(new Map());
   const subscribedRoomsRef = useRef<Set<RoomType>>(new Set());
   const reconnectAttemptsRef = useRef(0);
@@ -66,11 +68,12 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({
     }
     handlersRef.current.get(room)?.add(handler);
 
-    // Если WebSocket подключен и комната ещё не подписана — отправляем subscribe
-    if (wsRef.current?.readyState === WebSocket.OPEN && !subscribedRoomsRef.current.has(room)) {
-      wsRef.current.send(JSON.stringify({ type: `subscribe:${room}` }));
+    if (!subscribedRoomsRef.current.has(room)) {
       subscribedRoomsRef.current.add(room);
-      wsLogger.log(`Подписались на комнату: ${room}`);
+      if (wsRef.current?.readyState === WebSocket.OPEN) {
+        wsRef.current.send(JSON.stringify({ type: `subscribe:${room}` }));
+        wsLogger.log(`Подписались на комнату: ${room}`);
+      }
     }
   }, []);
 
@@ -83,10 +86,12 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({
       // Если больше нет обработчиков — отписываемся от комнаты
       if (handlers.size === 0) {
         handlersRef.current.delete(room);
-        if (wsRef.current?.readyState === WebSocket.OPEN && subscribedRoomsRef.current.has(room)) {
-          wsRef.current.send(JSON.stringify({ type: `unsubscribe:${room}` }));
+        if (subscribedRoomsRef.current.has(room)) {
+          if (wsRef.current?.readyState === WebSocket.OPEN) {
+            wsRef.current.send(JSON.stringify({ type: `unsubscribe:${room}` }));
+            wsLogger.log(`Отписались от комнаты: ${room}`);
+          }
           subscribedRoomsRef.current.delete(room);
-          wsLogger.log(`Отписались от комнаты: ${room}`);
         }
       }
     }
@@ -132,6 +137,11 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({
 
   // Подключение к WebSocket
   const connect = useCallback(() => {
+    if (!url) {
+      wsLogger.log('WebSocket URL не задан, соединение отключено');
+      return;
+    }
+
     if (!token) {
       wsLogger.log('Токен отсутствует, подключение отложено');
       return;
@@ -188,13 +198,14 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({
 
   // Подключение при монтировании компонента и наличии токена
   useEffect(() => {
-    if (token) {
+    if (token && url) {
       connect();
     }
 
     return () => {
       if (reconnectTimeoutRef.current) {
         clearTimeout(reconnectTimeoutRef.current);
+        reconnectTimeoutRef.current = null;
       }
       if (wsRef.current) {
         wsRef.current.close();

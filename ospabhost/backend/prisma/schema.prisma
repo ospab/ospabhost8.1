@@ -31,6 +31,7 @@ model User {
   posts         Post[]        @relation("PostAuthor") // Статьи блога
   comments      Comment[]     @relation("UserComments") // Комментарии
   buckets       StorageBucket[] // S3 хранилища пользователя
+  checkoutSessions StorageCheckoutSession[]
   
   // Новые relations для расширенных настроек
   sessions              Session[]
@@ -377,7 +378,7 @@ model StorageBucket {
   user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   name         String   // Уникальное имя бакета в рамках пользователя
-  plan         String   // Выбранный тариф (basic, standard, plus, pro, enterprise)
+  plan         String   // Код тарифа из StoragePlan
   quotaGb      Int      // Лимит включённого объёма в GB
   usedBytes    BigInt   @default(0) // Текущий объём хранения в байтах
   objectCount  Int      @default(0)
@@ -391,6 +392,10 @@ model StorageBucket {
   lastBilledAt   DateTime?
   autoRenew    Boolean  @default(true)
   usageSyncedAt DateTime?
+  storagePlan  StoragePlan? @relation(fields: [plan], references: [code])
+  regionConfig StorageRegion @relation("BucketRegion", fields: [region], references: [code])
+  storageClassConfig StorageClass @relation("BucketClass", fields: [storageClass], references: [code])
+  consoleCredential StorageConsoleCredential?
 
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
@@ -398,6 +403,8 @@ model StorageBucket {
   accessKeys   StorageAccessKey[]
 
   @@index([userId])
+  @@index([region])
+  @@index([storageClass])
   @@unique([userId, name]) // Имя уникально в рамках пользователя
   @@map("storage_bucket")
 }
@@ -416,4 +423,98 @@ model StorageAccessKey {
 
   @@index([bucketId])
   @@map("storage_access_key")
+}
+
+model StorageConsoleCredential {
+  id              Int      @id @default(autoincrement())
+  bucketId        Int      @unique
+  bucket          StorageBucket @relation(fields: [bucketId], references: [id], onDelete: Cascade)
+
+  login           String
+  passwordHash    String
+
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  lastGeneratedAt DateTime? // Для rate limiting (1 раз в неделю)
+
+  @@map("storage_console_credential")
+}
+
+model StoragePlan {
+  id               Int      @id @default(autoincrement())
+  code             String   @unique
+  name             String
+  price            Float
+  pricePerGb       Decimal? @db.Decimal(10, 4) // Цена за 1 GB для кастомного тарифа
+  bandwidthPerGb   Decimal? @db.Decimal(10, 4) // GB трафика на 1 GB хранения
+  requestsPerGb    Int?     // Количество операций на 1 GB хранения
+  quotaGb          Int      // Базовая квота для обычных тарифов (0 для custom)
+  bandwidthGb      Int      // Базовый трафик для обычных тарифов (0 для custom)
+  requestLimit     String   // Текстовое описание лимита операций
+  order            Int      @default(0)
+  isActive         Boolean  @default(true)
+  description      String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @default(now()) @updatedAt
+
+  buckets          StorageBucket[]
+  checkoutSessions StorageCheckoutSession[]
+
+  @@map("storage_plan")
+}
+
+model StorageCheckoutSession {
+  id              String   @id @default(uuid())
+  userId          Int?
+  user            User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  planId          Int
+  plan            StoragePlan @relation(fields: [planId], references: [id])
+  planCode        String
+  planName        String
+  planDescription String?
+  price           Float
+  quotaGb         Int
+  bandwidthGb     Int
+  requestLimit    String
+  createdAt       DateTime @default(now())
+  expiresAt       DateTime
+  consumedAt      DateTime?
+
+  @@index([userId])
+  @@index([planId])
+  @@map("storage_checkout_session")
+}
+
+model StorageRegion {
+  id          Int      @id @default(autoincrement())
+  code        String   @unique
+  name        String
+  description String?
+  endpoint    String?
+  isDefault   Boolean  @default(false)
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  buckets     StorageBucket[] @relation("BucketRegion")
+
+  @@map("storage_region")
+}
+
+model StorageClass {
+  id             Int      @id @default(autoincrement())
+  code           String   @unique
+  name           String
+  description    String?
+  redundancy     String?
+  performance    String?
+  retrievalFee   String?
+  isDefault      Boolean  @default(false)
+  isActive       Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  buckets        StorageBucket[] @relation("BucketClass")
+
+  @@map("storage_class")
 }

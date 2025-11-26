@@ -1,9 +1,11 @@
 import React, { useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import apiClient from '../../../utils/apiClient';
+import { useToast } from '../../../hooks/useToast';
 
 const NewTicketPage: React.FC = () => {
   const navigate = useNavigate();
+  const { addToast } = useToast();
   const [formData, setFormData] = useState({
     title: '',
     message: '',
@@ -28,10 +30,13 @@ const NewTicketPage: React.FC = () => {
       const response = await apiClient.post('/api/ticket/create', formData);
       
       // Перенаправляем на созданный тикет
+      addToast('Тикет создан и отправлен в поддержку', 'success');
       navigate(`/dashboard/tickets/${response.data.ticket.id}`);
     } catch (err) {
       console.error('Ошибка создания тикета:', err);
       setError('Не удалось создать тикет. Попробуйте ещё раз.');
+      addToast('Не удалось создать тикет', 'error');
+    } finally {
       setSending(false);
     }
   };
@@ -86,10 +91,10 @@ const NewTicketPage: React.FC = () => {
                   onChange={(e) => setFormData({ ...formData, category: e.target.value })}
                   className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                 >
-                  <option value="general">💬 Общие вопросы</option>
-                  <option value="technical">⚙️ Технические</option>
-                  <option value="billing">💰 Биллинг</option>
-                  <option value="other">📝 Другое</option>
+                <option value="general">Общие вопросы</option>
+                <option value="technical">Технические</option>
+                <option value="billing">Биллинг</option>
+                <option value="other">Другое</option>
                 </select>
               </div>
 
@@ -103,10 +108,10 @@ const NewTicketPage: React.FC = () => {
                   onChange={(e) => setFormData({ ...formData, priority: e.target.value })}
                   className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                 >
-                  <option value="low">🟢 Низкий</option>
-                  <option value="normal">⚪ Обычный</option>
-                  <option value="high">🟠 Высокий</option>
-                  <option value="urgent">🔴 Срочно</option>
+                <option value="low">Низкий</option>
+                <option value="normal">Обычный</option>
+                <option value="high">Высокий</option>
+                <option value="urgent">Срочно</option>
                 </select>
               </div>
             </div>

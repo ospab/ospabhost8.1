@@ -133,7 +133,18 @@ export const getMe = async (req: Request, res: Response) => {
     if (!user) {
       return res.status(401).json({ message: 'Сессия недействительна. Выполните вход заново.' });
     }
-    res.status(200).json({ user });
+    const safeUser = {
+      ...user,
+      balance: typeof user.balance === 'number' ? user.balance : Number(user.balance ?? 0),
+      buckets: user.buckets.map((bucket) => ({
+        ...bucket,
+        usedBytes: typeof bucket.usedBytes === 'bigint' ? Number(bucket.usedBytes) : Number(bucket.usedBytes ?? 0),
+        objectCount: typeof bucket.objectCount === 'number'
+          ? bucket.objectCount
+          : Number(bucket.objectCount ?? 0),
+      })),
+    };
+    res.status(200).json({ user: safeUser });
   } catch (error) {
     logger.error('Ошибка при получении данных пользователя:', error);
     res.status(503).json({ message: 'Не удалось загрузить профиль. Попробуйте позже.' });

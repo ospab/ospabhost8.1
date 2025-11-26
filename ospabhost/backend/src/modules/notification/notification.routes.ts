@@ -9,7 +9,8 @@ import {
   getVapidKey,
   subscribe,
   unsubscribe,
-  testPushNotification
+  testPushNotification,
+  testEmailNotification
 } from './notification.controller';
 import { authMiddleware } from '../auth/auth.middleware';
 
@@ -35,6 +36,9 @@ router.delete('/unsubscribe-push', unsubscribe);
 
 // Тестовая отправка Push-уведомления (только для админов)
 router.post('/test-push', testPushNotification);
+
+// Тестовая отправка Email-уведомления (только для админов)
+router.post('/test-email', testEmailNotification);
 
 // Пометить уведомление как прочитанное
 router.post('/:id/read', markAsRead);

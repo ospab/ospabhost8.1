@@ -68,38 +68,36 @@ const TicketsPage: React.FC<TicketsPageProps> = () => {
   };
 
   const getStatusBadge = (status: string) => {
-    const badges: Record<string, { color: string; text: string; emoji: string }> = {
-      open: { color: 'bg-green-100 text-green-800', text: 'Открыт', emoji: '🟢' },
-      in_progress: { color: 'bg-blue-100 text-blue-800', text: 'В работе', emoji: '🔵' },
-      awaiting_reply: { color: 'bg-yellow-100 text-yellow-800', text: 'Ожидает ответа', emoji: '🟡' },
-      resolved: { color: 'bg-purple-100 text-purple-800', text: 'Решён', emoji: '🟣' },
-      closed: { color: 'bg-gray-100 text-gray-800', text: 'Закрыт', emoji: '⚪' }
+    const badges: Record<string, { color: string; text: string }> = {
+      open: { color: 'bg-green-100 text-green-800', text: 'Открыт' },
+      in_progress: { color: 'bg-blue-100 text-blue-800', text: 'В работе' },
+      awaiting_reply: { color: 'bg-yellow-100 text-yellow-800', text: 'Ожидает ответа' },
+      resolved: { color: 'bg-purple-100 text-purple-800', text: 'Решён' },
+      closed: { color: 'bg-gray-100 text-gray-800', text: 'Закрыт' }
     };
 
     const badge = badges[status] || badges.open;
     
     return (
-      <span className={`inline-flex items-center gap-1 px-3 py-1 rounded-full text-xs font-medium ${badge.color}`}>
-        <span>{badge.emoji}</span>
-        <span>{badge.text}</span>
+      <span className={`inline-flex items-center px-3 py-1 rounded-full text-xs font-medium ${badge.color}`}>
+        {badge.text}
       </span>
     );
   };
 
   const getPriorityBadge = (priority: string) => {
-    const badges: Record<string, { color: string; text: string; emoji: string }> = {
-      urgent: { color: 'bg-red-100 text-red-800 border-red-300', text: 'Срочно', emoji: '🔴' },
-      high: { color: 'bg-orange-100 text-orange-800 border-orange-300', text: 'Высокий', emoji: '🟠' },
-      normal: { color: 'bg-gray-100 text-gray-800 border-gray-300', text: 'Обычный', emoji: '⚪' },
-      low: { color: 'bg-green-100 text-green-800 border-green-300', text: 'Низкий', emoji: '🟢' }
+    const badges: Record<string, { color: string; text: string }> = {
+      urgent: { color: 'bg-red-100 text-red-800 border-red-300', text: 'Срочно' },
+      high: { color: 'bg-orange-100 text-orange-800 border-orange-300', text: 'Высокий' },
+      normal: { color: 'bg-gray-100 text-gray-800 border-gray-300', text: 'Обычный' },
+      low: { color: 'bg-green-100 text-green-800 border-green-300', text: 'Низкий' }
     };
 
     const badge = badges[priority] || badges.normal;
     
     return (
-      <span className={`inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium border ${badge.color}`}>
-        <span>{badge.emoji}</span>
-        <span>{badge.text}</span>
+      <span className={`inline-flex items-center px-2 py-1 rounded-md text-xs font-medium border ${badge.color}`}>
+        {badge.text}
       </span>
     );
   };
@@ -216,7 +214,6 @@ const TicketsPage: React.FC<TicketsPageProps> = () => {
         {/* Tickets Grid */}
         {tickets.length === 0 ? (
           <div className="bg-white rounded-xl shadow-md p-12 text-center">
-            <div className="text-6xl mb-4">📭</div>
             <h3 className="text-xl font-semibold text-gray-900 mb-2">Нет тикетов</h3>
             <p className="text-gray-600 mb-6">У вас пока нет открытых тикетов поддержки</p>
             <button
@@ -253,19 +250,10 @@ const TicketsPage: React.FC<TicketsPageProps> = () => {
                   {/* Footer */}
                   <div className="flex items-center justify-between pt-4 border-t border-gray-200">
                     <div className="flex items-center gap-4 text-sm text-gray-600">
-                      <span className="flex items-center gap-1">
-                        <span>🕒</span>
-                        <span>{formatRelativeTime(ticket.updatedAt)}</span>
-                      </span>
-                      <span className="flex items-center gap-1">
-                        <span>💬</span>
-                        <span>{ticket.responses?.length || 0} ответов</span>
-                      </span>
+                      <span>{formatRelativeTime(ticket.updatedAt)}</span>
+                      <span>{ticket.responses?.length || 0} ответов</span>
                       {ticket.closedAt && (
-                        <span className="flex items-center gap-1">
-                          <span>🔒</span>
-                          <span>Закрыт</span>
-                        </span>
+                        <span>Закрыт</span>
                       )}
                     </div>
                     <span className="text-blue-500 hover:text-blue-600 font-medium">

@@ -1,8 +1,81 @@
 import { Request, Response } from 'express';
+import type { NotificationSettings } from '@prisma/client';
 import { prisma } from '../../prisma/client';
 import { subscribePush, unsubscribePush, getVapidPublicKey, sendPushNotification } from './push.service';
 import { broadcastToUser } from '../../websocket/server';
 import { logger } from '../../utils/logger';
+import { sendNotificationEmail } from './email.service';
+
+type ChannelOverrides = {
+  email?: boolean;
+  push?: boolean;
+};
+
+const CHANNEL_SETTINGS_MAP: Record<string, Partial<Record<'email' | 'push', keyof NotificationSettings>>> = {
+  storage_payment_charged: { email: 'emailPaymentCharged', push: 'pushPaymentCharged' },
+  storage_payment_failed: { email: 'emailBalanceLow', push: 'pushBalanceLow' },
+  storage_payment_pending: { email: 'emailBalanceLow', push: 'pushBalanceLow' },
+  balance_deposit: { email: 'emailPaymentCharged', push: 'pushPaymentCharged' },
+  balance_withdrawal: { email: 'emailPaymentCharged', push: 'pushPaymentCharged' },
+  ticket_reply: { email: 'emailTicketReply', push: 'pushTicketReply' },
+  ticket_response: { email: 'emailTicketReply', push: 'pushTicketReply' },
+  newsletter: { email: 'emailNewsletter' },
+};
+
+const resolveChannels = (
+  type: string,
+  settings: NotificationSettings | null,
+  overrides: ChannelOverrides = {}
+) => {
+  const config = CHANNEL_SETTINGS_MAP[type] || {};
+
+  const readSetting = (key?: keyof NotificationSettings) => {
+    if (!key) return true;
+    if (!settings) return true;
+    const value = settings[key];
+    return typeof value === 'boolean' ? value : true;
+  };
+
+  const defaultEmail = readSetting(config.email);
+  const defaultPush = readSetting(config.push);
+
+  return {
+    email: typeof overrides.email === 'boolean' ? overrides.email : defaultEmail,
+    push: typeof overrides.push === 'boolean' ? overrides.push : defaultPush,
+  };
+};
+
+const ensureNotificationSettings = async (userId: number) => {
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: {
+      id: true,
+      email: true,
+      username: true,
+      notificationSettings: true,
+    },
+  });
+
+  if (!user) {
+    throw new Error(`Пользователь ${userId} не найден для отправки уведомления`);
+  }
+
+  let notificationSettings = user.notificationSettings;
+
+  if (!notificationSettings) {
+    notificationSettings = await prisma.notificationSettings.upsert({
+      where: { userId },
+      update: {},
+      create: { userId },
+    });
+  }
+
+  return {
+    email: user.email,
+    username: user.username,
+    notificationSettings,
+  };
+};
 
 // Получить все уведомления пользователя с пагинацией
 export const getNotifications = async (req: Request, res: Response) => {
@@ -191,10 +264,18 @@ interface CreateNotificationParams {
   actionUrl?: string;
   icon?: string;
   color?: string;
+  sendEmail?: boolean;
+  sendPush?: boolean;
 }
 
 export async function createNotification(params: CreateNotificationParams) {
   try {
+    const { email, username, notificationSettings } = await ensureNotificationSettings(params.userId);
+    const channels = resolveChannels(params.type, notificationSettings, {
+      email: params.sendEmail,
+      push: params.sendPush,
+    });
+
     const notification = await prisma.notification.create({
       data: {
         userId: params.userId,
@@ -222,20 +303,49 @@ export async function createNotification(params: CreateNotificationParams) {
     }
     
     // Отправляем Push-уведомление если есть подписки
-    try {
-      await sendPushNotification(params.userId, {
-        title: params.title,
-        body: params.message,
-        icon: params.icon,
-        data: {
-          notificationId: notification.id,
+    if (channels.push) {
+      try {
+        await sendPushNotification(params.userId, {
+          title: params.title,
+          body: params.message,
+          icon: params.icon,
+          data: {
+            notificationId: notification.id,
+            type: params.type,
+            actionUrl: params.actionUrl
+          }
+        });
+      } catch (pushError) {
+        console.error('Ошибка отправки Push:', pushError);
+        // Не прерываем выполнение если Push не отправился
+      }
+    } else {
+      logger.debug(`Push уведомление для пользователя ${params.userId} пропущено настройками`);
+    }
+
+    if (channels.email && email) {
+      try {
+        const result = await sendNotificationEmail({
+          to: email,
+          username,
+          title: params.title,
+          message: params.message,
+          actionUrl: params.actionUrl,
           type: params.type,
-          actionUrl: params.actionUrl
+        });
+
+        if (result.status === 'success') {
+          logger.info(`[Email] Уведомление ${notification.id} отправлено пользователю ${params.userId}`);
+        } else {
+          logger.warn(`[Email] Уведомление ${notification.id} пропущено: ${result.message}`);
         }
-      });
-    } catch (pushError) {
-      console.error('Ошибка отправки Push:', pushError);
-      // Не прерываем выполнение если Push не отправился
+      } catch (emailError) {
+        console.error('Ошибка отправки email уведомления:', emailError);
+      }
+    } else if (!email) {
+      logger.debug(`Email уведомление для пользователя ${params.userId} пропущено: отсутствует адрес`);
+    } else {
+      logger.debug(`Email уведомление для пользователя ${params.userId} отключено настройками`);
     }
     
     return notification;
@@ -414,6 +524,66 @@ export const testPushNotification = async (req: Request, res: Response) => {
     res.status(500).json({ 
       success: false, 
       message: 'Критическая ошибка при отправке тестового уведомления',
+      error: error instanceof Error ? error.message : 'Неизвестная ошибка'
+    });
+  }
+};
+
+// Тестовая отправка Email-уведомления (только для админов)
+export const testEmailNotification = async (req: Request, res: Response) => {
+  try {
+    const userId = req.user!.id;
+    const user = req.user!;
+
+    if (!user.isAdmin) {
+      return res.status(403).json({
+        success: false,
+        message: 'Только администраторы могут отправлять тестовые email-уведомления'
+      });
+    }
+
+    const dbUser = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { email: true }
+    });
+
+    if (!dbUser?.email) {
+      return res.status(400).json({
+        success: false,
+        message: 'У пользователя не указан email. Добавьте его в настройках профиля.'
+      });
+    }
+
+    if (!process.env.SMTP_USER || !process.env.SMTP_PASS) {
+      return res.status(400).json({
+        success: false,
+        message: 'SMTP не настроен. Укажите параметры SMTP в переменных окружения.'
+      });
+    }
+
+    const notification = await createNotification({
+      userId,
+      type: 'test_email',
+      title: 'Тестовое email уведомление',
+      message: 'Это тестовое email уведомление. Если письмо пришло — уведомления настроены верно.',
+      actionUrl: '/dashboard/notifications',
+      icon: 'mail',
+      color: 'blue',
+      sendPush: false,
+    });
+
+    res.json({
+      success: true,
+      message: 'Тестовое email уведомление отправлено. Проверьте почтовый ящик.',
+      data: {
+        notificationId: notification.id,
+      }
+    });
+  } catch (error) {
+    logger.error('[TEST EMAIL] Ошибка отправки тестового email уведомления:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Ошибка при отправке тестового email уведомления',
       error: error instanceof Error ? error.message : 'Неизвестная ошибка'
     });
   }

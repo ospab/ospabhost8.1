@@ -1,316 +1,496 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { FiAlertCircle, FiArrowLeft, FiDatabase, FiDollarSign, FiInfo, FiShoppingCart } from 'react-icons/fi';
+import {
+  FiAlertCircle,
+  FiArrowLeft,
+  FiClock,
+  FiDatabase,
+  FiInfo,
+  FiShoppingCart,
+  FiShield,
+  FiGlobe
+} from 'react-icons/fi';
 import apiClient from '../../utils/apiClient';
 import { API_URL } from '../../config/api';
-import { DEFAULT_STORAGE_PLAN_ID, STORAGE_PLAN_IDS, STORAGE_PLAN_MAP, type StoragePlanId } from '../../constants/storagePlans';
+import type { StorageBucket } from './types';
 
-// Упрощённый Checkout только для S3 Bucket
-interface CheckoutProps {
-  onSuccess?: () => void;
-}
+type CheckoutPlan = {
+  id: number;
+  code: string;
+  name: string;
+  price: number;
+  quotaGb: number;
+  bandwidthGb: number;
+  requestLimit: string;
+  description: string | null;
+  order: number;
+  isActive: boolean;
+};
 
-const Checkout: React.FC<CheckoutProps> = ({ onSuccess }) => {
+type CartPayload = {
+  cartId: string;
+  plan: CheckoutPlan;
+  price: number;
+  expiresAt: string;
+};
+
+const BUCKET_NAME_REGEX = /^[a-z0-9-]{3,40}$/;
+
+type CreateBucketResponse = {
+  bucket?: StorageBucket;
+  consoleCredentials?: {
+    login: string;
+    password: string;
+    url?: string | null;
+  };
+  error?: string;
+};
+
+type StorageRegionOption = {
+  code: string;
+  name: string;
+  description: string | null;
+  endpoint: string | null;
+  isDefault: boolean;
+  isActive: boolean;
+};
+
+const Checkout: React.FC = () => {
   const location = useLocation();
   const navigate = useNavigate();
 
-  const [planName, setPlanName] = useState<StoragePlanId>(DEFAULT_STORAGE_PLAN_ID);
-  const [planPrice, setPlanPrice] = useState<number>(STORAGE_PLAN_MAP[DEFAULT_STORAGE_PLAN_ID].price);
+  const params = useMemo(() => new URLSearchParams(location.search), [location.search]);
+  const cartId = params.get('cart') ?? '';
+
+  const [cart, setCart] = useState<CartPayload | null>(null);
+  const [loadingCart, setLoadingCart] = useState<boolean>(true);
   const [balance, setBalance] = useState<number>(0);
   const [bucketName, setBucketName] = useState<string>('');
-  const [region, setRegion] = useState<string>('ru-central-1');
-  const [storageClass, setStorageClass] = useState<string>('standard');
+  const [region, setRegion] = useState<string>('');
   const [isPublic, setIsPublic] = useState<boolean>(false);
   const [versioning, setVersioning] = useState<boolean>(false);
-  const [loading, setLoading] = useState<boolean>(false);
-  const [error, setError] = useState<string>('');
+  const [submitting, setSubmitting] = useState<boolean>(false);
+  const [error, setError] = useState<string | null>(null);
+  const [regions, setRegions] = useState<StorageRegionOption[]>([]);
+  const [loadingRegions, setLoadingRegions] = useState<boolean>(false);
 
-  // Загружаем параметры из query (?plan=basic&price=199)
   const fetchBalance = useCallback(async () => {
     try {
       const res = await apiClient.get(`${API_URL}/api/user/balance`);
-      setBalance(res.data.balance || 0);
-    } catch (e) {
-      console.error('Ошибка загрузки баланса', e);
+      setBalance(Number(res.data?.balance) || 0);
+    } catch (err) {
+      console.error('Ошибка загрузки баланса', err);
+    }
+  }, []);
+
+  const fetchCart = useCallback(async () => {
+    if (!cartId) {
+      setError('Не найден идентификатор корзины. Вернитесь к выбору тарифа.');
+      setLoadingCart(false);
+      return;
+    }
+
+    try {
+      setLoadingCart(true);
+      setError(null);
+      const response = await apiClient.get(`${API_URL}/api/storage/cart/${cartId}`);
+      setCart(response.data as CartPayload);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Не удалось загрузить корзину';
+      setError(message);
+    } finally {
+      setLoadingCart(false);
+    }
+  }, [cartId]);
+
+  useEffect(() => {
+    fetchBalance();
+  }, [fetchBalance]);
+
+  useEffect(() => {
+    fetchCart();
+  }, [fetchCart]);
+
+  const fetchRegions = useCallback(async () => {
+    try {
+      setLoadingRegions(true);
+      const response = await apiClient.get(`${API_URL}/api/storage/regions`);
+      const fetchedRegions = Array.isArray(response.data?.regions)
+        ? (response.data.regions as StorageRegionOption[])
+        : [];
+      const activeRegions = fetchedRegions.filter((item) => item?.isActive !== false);
+      setRegions(activeRegions);
+
+      if (activeRegions.length > 0) {
+        const preferred = activeRegions.find((item) => item.isDefault) ?? activeRegions[0];
+        setRegion((current) => (current && activeRegions.some((item) => item.code === current) ? current : preferred.code));
+      } else {
+        setRegion('');
+      }
+    } catch (err) {
+      console.error('Ошибка загрузки регионов', err);
+      setRegions([]);
+      setRegion('');
+    } finally {
+      setLoadingRegions(false);
     }
   }, []);
 
   useEffect(() => {
-    const params = new URLSearchParams(location.search);
-    const rawPlan = params.get('plan');
-    const match = rawPlan ? rawPlan.toLowerCase() : '';
-    const planId = STORAGE_PLAN_IDS.includes(match as StoragePlanId)
-      ? (match as StoragePlanId)
-      : DEFAULT_STORAGE_PLAN_ID;
-    setPlanName(planId);
+    fetchRegions();
+  }, [fetchRegions]);
 
-    const priceParam = params.get('price');
-    if (priceParam) {
-      const numeric = Number(priceParam);
-      setPlanPrice(Number.isFinite(numeric) && numeric > 0 ? numeric : STORAGE_PLAN_MAP[planId].price);
-    } else {
-      setPlanPrice(STORAGE_PLAN_MAP[planId].price);
-    }
+  const plan = cart?.plan;
+  const planPrice = cart?.price ?? plan?.price ?? 0;
 
-    fetchBalance();
-  }, [location.search, fetchBalance]);
+  const planHighlights = useMemo(() => {
+    if (!plan?.description) return [] as string[];
+    return plan.description
+      .split(/\n|\|/)
+      .map((item) => item.trim())
+      .filter(Boolean)
+      .slice(0, 5);
+  }, [plan]);
 
-  const meta = STORAGE_PLAN_MAP[planName];
+  const expiresAtText = useMemo(() => {
+    if (!cart) return null;
+    const expires = new Date(cart.expiresAt);
+    return expires.toLocaleString('ru-RU');
+  }, [cart]);
 
-  const canCreate = () => {
-    if (!planPrice || !bucketName.trim() || !meta) return false;
+  const canCreate = useMemo(() => {
+    if (!cart || !plan) return false;
+    if (!region) return false;
+    if (!BUCKET_NAME_REGEX.test(bucketName.trim())) return false;
     if (balance < planPrice) return false;
-    // Простая валидация имени (можно расширить): маленькие буквы, цифры, тире
-    return /^[a-z0-9-]{3,40}$/.test(bucketName.trim());
-  };
+    return true;
+  }, [balance, bucketName, cart, planPrice, region]);
+
+  const selectedRegion = useMemo(
+    () => regions.find((item) => item.code === region),
+    [regions, region]
+  );
+
+  const regionLabel = useMemo(() => {
+    if (selectedRegion?.name) return selectedRegion.name;
+    if (selectedRegion?.code) return selectedRegion.code;
+    if (region) return region;
+    return '—';
+  }, [selectedRegion, region]);
+
+  const balanceAfterPayment = useMemo(() => balance - planPrice, [balance, planPrice]);
+
+  const formatCurrency = useCallback((amount: number) => `₽${amount.toLocaleString('ru-RU', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`, []);
 
   const handleCreate = async () => {
-    if (!canCreate()) {
-      setError('Проверьте корректность данных и баланс');
-      return;
-    }
-    setLoading(true);
-    setError('');
+    if (!canCreate || !cart) return;
+    setSubmitting(true);
+    setError(null);
     try {
-      // POST на будущий endpoint S3
-      const res = await apiClient.post(`${API_URL}/api/storage/buckets`, {
+      const response = await apiClient.post<CreateBucketResponse>(`${API_URL}/api/storage/buckets`, {
         name: bucketName.trim(),
-        plan: planName,
-        quotaGb: meta?.quotaGb || 0,
+        cartId: cart.cartId,
         region,
-        storageClass,
+        storageClass: 'standard',
         public: isPublic,
-        versioning
+        versioning,
       });
 
-      if (res.data?.error) {
-        setError(res.data.error);
+      const { bucket: createdBucket, consoleCredentials, error: apiError } = response.data ?? {};
+      if (apiError) {
+        throw new Error(apiError);
+      }
+      if (!createdBucket) {
+        throw new Error('Не удалось получить созданный бакет. Попробуйте ещё раз.');
+      }
+
+      try {
+        const userRes = await apiClient.get(`${API_URL}/api/auth/me`);
+        window.dispatchEvent(new CustomEvent('userDataUpdate', {
+          detail: { user: userRes.data?.user },
+        }));
+      } catch (refreshError) {
+        console.error('Ошибка обновления данных пользователя', refreshError);
+      }
+
+      if (consoleCredentials) {
+        navigate(`/dashboard/storage/${createdBucket.id}`, {
+          state: {
+            consoleCredentials,
+            bucketName: createdBucket.name,
+          },
+        });
       } else {
-        // Обновляем пользовательские данные и баланс (если списание произошло на сервере)
-        try {
-          const userRes = await apiClient.get(`${API_URL}/api/auth/me`);
-          window.dispatchEvent(new CustomEvent('userDataUpdate', {
-            detail: { user: userRes.data.user }
-          }));
-        } catch (e) {
-          console.error('Ошибка обновления userData', e);
-        }
-        if (onSuccess) onSuccess();
-        navigate('/dashboard/storage');
+        navigate(`/dashboard/storage/${createdBucket.id}`);
       }
-    } catch (e: unknown) {
-      let message = 'Ошибка создания бакета';
-      if (e && typeof e === 'object' && 'response' in e) {
-        const resp = (e as { response?: { data?: { message?: string } } }).response;
-        if (resp?.data?.message) message = resp.data.message;
-      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Ошибка создания бакета';
       setError(message);
-      console.error(e);
     } finally {
-      setLoading(false);
+      setSubmitting(false);
     }
   };
 
   return (
-    <div className="max-w-5xl mx-auto">
-      {/* Header */}
-      <div className="mb-6">
+    <div className="max-w-6xl mx-auto pb-16">
+      <div className="flex flex-wrap items-center justify-between gap-4 mb-8">
         <button
           onClick={() => navigate('/dashboard/storage')}
-          className="flex items-center gap-2 px-4 py-2 text-ospab-primary hover:bg-ospab-primary/5 rounded-lg transition-colors mb-4"
+          className="flex items-center gap-2 px-4 py-2 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
         >
           <FiArrowLeft />
-          <span>Назад к хранилищу</span>
+          <span>Назад к списку бакетов</span>
         </button>
-        <h1 className="text-3xl font-bold text-gray-800 flex items-center gap-2">
-          <FiDatabase className="text-ospab-primary" /> Создание S3 Bucket
-        </h1>
-        <p className="text-gray-600 mt-1">План: {meta?.title}{planPrice ? ` • ₽${planPrice}/мес` : ''}</p>
+        {expiresAtText && (
+          <span className="inline-flex items-center gap-2 text-sm text-gray-500">
+            <FiClock /> Корзина действительна до {expiresAtText}
+          </span>
+        )}
       </div>
 
+      <h1 className="text-3xl font-bold text-gray-900 flex items-center gap-3 mb-4">
+        <FiDatabase className="text-blue-600" />
+        Создание S3 бакета
+      </h1>
+      <p className="text-gray-600 mb-6">
+        Проверяем ваш тариф, готовим бакет и резервируем средства на балансе.
+      </p>
+
       {error && (
-        <div className="bg-red-50 border border-red-200 rounded-xl p-4 mb-6 flex items-start gap-3">
-          <FiAlertCircle className="text-red-500 text-xl flex-shrink-0 mt-0.5" />
+        <div className="bg-red-50 border border-red-200 text-red-700 rounded-xl p-4 mb-6 flex items-start gap-3">
+          <FiAlertCircle className="text-xl" />
           <div>
-            <p className="text-red-700 font-semibold">Ошибка</p>
-            <p className="text-red-600 text-sm">{error}</p>
+            <p className="font-semibold">Нужно внимание</p>
+            <p className="text-sm">{error}</p>
           </div>
         </div>
       )}
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Left */}
-        <div className="lg:col-span-2 space-y-6">
-          {/* Bucket settings */}
-          <div className="bg-white rounded-xl shadow-md p-6">
-            <h2 className="text-xl font-bold text-gray-800 mb-4">Параметры бакета</h2>
+      <div className="grid gap-6 lg:grid-cols-[2fr_1fr]">
+        <div className="space-y-6">
+          <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6">
+            <div className="flex items-center justify-between mb-4">
+              <div>
+                <h2 className="text-xl font-semibold text-gray-900">Ваш тариф</h2>
+                <p className="text-sm text-gray-500">Зафиксирован при создании корзины</p>
+              </div>
+              <span className="inline-flex items-center gap-2 text-sm text-gray-500">
+                <FiShield /> {plan?.code ?? '—'}
+              </span>
+            </div>
+
+            {loadingCart ? (
+              <div className="animate-pulse h-32 bg-gray-100 rounded-lg" />
+            ) : plan ? (
+              <>
+                <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4 mb-6">
+                  <div>
+                    <h3 className="text-2xl font-bold text-gray-900">{plan.name}</h3>
+                    <p className="text-sm text-gray-500">S3 Object Storage</p>
+                  </div>
+                  <div className="text-right">
+                    <p className="text-sm text-gray-500">₽ в месяц</p>
+                    <p className="text-4xl font-bold text-gray-900">{plan.price.toLocaleString('ru-RU')}</p>
+                  </div>
+                </div>
+
+                <div className="grid sm:grid-cols-3 gap-3 mb-6 text-sm">
+                  <div className="bg-gray-50 rounded-xl p-3">
+                    <p className="text-gray-500">Хранилище</p>
+                    <p className="text-lg font-semibold text-gray-900">{plan.quotaGb.toLocaleString('ru-RU')} GB</p>
+                  </div>
+                  <div className="bg-gray-50 rounded-xl p-3">
+                    <p className="text-gray-500">Исходящий трафик</p>
+                    <p className="text-lg font-semibold text-gray-900">{plan.bandwidthGb.toLocaleString('ru-RU')} GB</p>
+                  </div>
+                  <div className="bg-gray-50 rounded-xl p-3">
+                    <p className="text-gray-500">Запросы</p>
+                    <p className="text-lg font-semibold text-gray-900">{plan.requestLimit}</p>
+                  </div>
+                </div>
+
+                {planHighlights.length > 0 && (
+                  <ul className="grid sm:grid-cols-2 gap-3 text-sm text-gray-600">
+                    {planHighlights.map((item) => (
+                      <li key={item} className="flex items-start gap-2">
+                        <span className="mt-1 inline-block h-1.5 w-1.5 rounded-full bg-blue-500" />
+                        <span>{item}</span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </>
+            ) : (
+              <p className="text-sm text-gray-500">Корзина не найдена. Вернитесь на страницу тарифов.</p>
+            )}
+          </div>
+
+          <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6">
+            <div className="flex items-center gap-3 mb-4">
+              <FiInfo className="text-blue-600 text-xl" />
+              <div>
+                <h2 className="text-xl font-semibold text-gray-900">Настройка бакета</h2>
+                <p className="text-sm text-gray-500">Базовые параметры можно изменить позже</p>
+              </div>
+            </div>
+
             <div className="space-y-5">
               <div>
                 <label className="block text-sm font-semibold text-gray-700 mb-2">Имя бакета</label>
                 <input
-                  type="text"
                   value={bucketName}
-                  onChange={(e) => setBucketName(e.target.value)}
+                  onChange={(event) => setBucketName(event.target.value.toLowerCase())}
                   placeholder="например: media-assets"
-                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-ospab-primary focus:border-transparent transition-all"
+                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                 />
-                <p className="text-xs text-gray-500 mt-1">Допустимы: a-z 0-9 - (3–40 символов)</p>
+                <p className="text-xs text-gray-500 mt-1">a-z, 0-9, дефис, 3–40 символов</p>
               </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="grid sm:grid-cols-2 gap-4">
                 <div>
                   <label className="block text-sm font-semibold text-gray-700 mb-2">Регион</label>
-                  <select
-                    value={region}
-                    onChange={(e) => setRegion(e.target.value)}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-ospab-primary focus:border-transparent"
-                  >
-                    <option value="ru-central-1">ru-central-1</option>
-                    <option value="eu-east-1">eu-east-1</option>
-                    <option value="eu-west-1">eu-west-1</option>
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-sm font-semibold text-gray-700 mb-2">Класс хранения</label>
-                  <select
-                    value={storageClass}
-                    onChange={(e) => setStorageClass(e.target.value)}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-ospab-primary focus:border-transparent"
-                  >
-                    <option value="standard">Standard</option>
-                    <option value="infrequent">Infrequent</option>
-                    <option value="archive">Archive</option>
-                  </select>
+                  <div className="relative">
+                    <FiGlobe className="absolute left-3 top-3 text-gray-400" />
+                    <select
+                      value={region}
+                      onChange={(event) => setRegion(event.target.value)}
+                      disabled={loadingRegions || regions.length === 0}
+                      className="w-full pl-10 pr-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 disabled:bg-gray-100 disabled:text-gray-500"
+                    >
+                      {loadingRegions && <option value="">Загрузка...</option>}
+                      {!loadingRegions && regions.length === 0 && <option value="">Нет доступных регионов</option>}
+                      {regions.map((item) => (
+                        <option key={item.code} value={item.code}>
+                          {item.code}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
                 </div>
               </div>
 
-              <div className="flex items-center gap-4">
-                <label className="flex items-center gap-2 cursor-pointer select-none">
+              <div className="flex flex-wrap gap-4 text-sm text-gray-700">
+                <label className="inline-flex items-center gap-2 cursor-pointer select-none">
                   <input
                     type="checkbox"
                     checked={isPublic}
-                    onChange={(e) => setIsPublic(e.target.checked)}
+                    onChange={(event) => setIsPublic(event.target.checked)}
                     className="rounded"
                   />
-                  <span className="text-sm text-gray-700">Публичный доступ</span>
+                  <span>Публичный доступ</span>
                 </label>
-                <label className="flex items-center gap-2 cursor-pointer select-none">
+                <label className="inline-flex items-center gap-2 cursor-pointer select-none">
                   <input
                     type="checkbox"
                     checked={versioning}
-                    onChange={(e) => setVersioning(e.target.checked)}
+                    onChange={(event) => setVersioning(event.target.checked)}
                     className="rounded"
                   />
-                  <span className="text-sm text-gray-700">Версионирование</span>
+                  <span>Версионирование объектов</span>
                 </label>
               </div>
             </div>
           </div>
-
-          {/* Plan info */}
-            <div className="bg-white rounded-xl shadow-md p-6">
-              <div className="flex items-center gap-2 mb-4">
-                <FiInfo className="text-ospab-primary text-xl" />
-                <h2 className="text-xl font-bold text-gray-800">Информация о плане</h2>
-              </div>
-              {meta ? (
-                <div className="space-y-3">
-                  <p className="text-gray-700 text-sm">Включённый объём: <span className="font-semibold">{meta.quotaGb} GB</span></p>
-                  <ul className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-sm text-gray-600">
-                    {meta.included.slice(0, 4).map((d) => (
-                      <li key={d} className="flex items-center gap-2">
-                        <span className="w-1.5 h-1.5 bg-ospab-primary rounded-full"></span>{d}
-                      </li>
-                    ))}
-                  </ul>
-                  <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 text-sm text-gray-700">
-                    Оплата списывается помесячно при создании бакета. Использование сверх квоты будет тарифицироваться позже.
-                  </div>
-                </div>
-              ) : (
-                <p className="text-gray-500 text-sm">Параметры плана не найдены. Вернитесь на страницу тарифов.</p>
-              )}
-            </div>
         </div>
 
-        {/* Right */}
-        <div className="lg:col-span-1">
-          <div className="bg-white rounded-xl shadow-md p-6 sticky top-4">
-            <div className="flex items-center gap-2 mb-6">
-              <FiShoppingCart className="text-ospab-primary text-xl" />
-              <h2 className="text-xl font-bold text-gray-800">Итого</h2>
+        <aside className="space-y-6">
+          <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-lg font-semibold text-gray-900">К оплате сегодня</h2>
+              <FiShoppingCart className="text-blue-600 text-xl" />
             </div>
 
-            <div className="bg-gradient-to-br from-ospab-primary to-ospab-accent rounded-lg p-4 mb-6 text-white">
-              <div className="flex items-center gap-2 mb-2">
-                <FiDollarSign className="text-lg" />
-                <p className="text-white/80 text-sm">Баланс</p>
-              </div>
-              <p className="text-2xl font-bold mb-3">₽{balance.toFixed(2)}</p>
+            <div className="bg-blue-50 rounded-xl p-4 mb-4">
+              <p className="text-sm text-blue-600">Баланс аккаунта</p>
+              <p className="text-2xl font-bold text-blue-700">₽{balance.toFixed(2)}</p>
               <button
                 onClick={() => navigate('/dashboard/billing')}
-                className="w-full bg-white/20 hover:bg-white/30 px-4 py-2 rounded-lg transition-colors text-sm font-semibold"
-              >Пополнить баланс</button>
+                className="mt-3 w-full text-sm font-semibold text-blue-600 hover:text-blue-700"
+              >
+                Пополнить баланс
+              </button>
             </div>
 
-            <div className="space-y-4 mb-6">
-              <div>
-                <p className="text-sm text-gray-500 mb-1">План</p>
-                {meta ? (
-                  <div className="bg-gray-50 rounded-lg p-3">
-                    <p className="font-semibold text-gray-800 mb-1">{meta.title}</p>
-                    <p className="text-sm text-gray-600">₽{planPrice}/мес</p>
-                  </div>
-                ) : (
-                  <p className="text-gray-400 text-sm">Не выбран</p>
-                )}
-              </div>
-
-              <div>
-                <p className="text-sm text-gray-500 mb-1">Имя бакета</p>
-                {bucketName ? (
-                  <div className="bg-gray-50 rounded-lg p-3">
-                    <p className="font-semibold text-gray-800">{bucketName}</p>
-                  </div>
-                ) : (
-                  <p className="text-gray-400 text-sm">Не указано</p>
-                )}
-              </div>
-
-              {planName && (
-                <div className="pt-4 border-t border-gray-200">
-                  <div className="space-y-2 mb-3 text-sm">
-                    <div className="flex justify-between">
-                      <span className="text-gray-600">Стоимость:</span>
-                      <span className="font-semibold">₽{planPrice}</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-gray-600">Баланс:</span>
-                      <span className="font-semibold">₽{balance.toFixed(2)}</span>
-                    </div>
-                  </div>
-                  <div className="flex justify-between pt-3 border-t border-gray-200">
-                    <span className="text-gray-800 font-semibold">Остаток:</span>
-                    <span className={`font-bold text-lg ${balance - planPrice >= 0 ? 'text-green-600' : 'text-red-600'}`}>₽{(balance - planPrice).toFixed(2)}</span>
-                  </div>
+            <div className="space-y-4 text-sm">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <p className="text-gray-500">План</p>
+                  <p className="text-xs text-gray-400">S3 Object Storage</p>
                 </div>
+                <div className="text-right">
+                  <p className="font-semibold text-gray-900">{plan?.name ?? '—'}</p>
+                  <p className="text-xs text-gray-500">{plan ? formatCurrency(planPrice) : '—'}</p>
+                </div>
+              </div>
+
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <p className="text-gray-500">Регион</p>
+                  <p className="text-xs text-gray-400">Endpoint</p>
+                </div>
+                <div className="text-right">
+                  <p className="font-semibold text-gray-900">{regionLabel}</p>
+                  <p className="text-xs text-gray-500">{selectedRegion?.endpoint ?? '—'}</p>
+                </div>
+              </div>
+
+              <div className="flex items-center justify-between gap-3">
+                <p className="text-gray-500">Баланс</p>
+                <p className="font-semibold text-gray-900">{formatCurrency(balance)}</p>
+              </div>
+
+              <div className="flex items-center justify-between gap-3 pt-4 border-t border-gray-200">
+                <div>
+                  <p className="text-gray-700 font-semibold">Итог к списанию</p>
+                  {plan && (
+                    <p className="text-xs text-gray-500">Ежемесячный платёж тарифа</p>
+                  )}
+                </div>
+                <p className="text-2xl font-bold text-gray-900">{plan ? formatCurrency(planPrice) : '—'}</p>
+              </div>
+
+              {plan && (
+                <p className={`text-xs ${balanceAfterPayment >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
+                  {balanceAfterPayment >= 0
+                    ? `После оплаты останется: ${formatCurrency(balanceAfterPayment)}`
+                    : `Не хватает: ${formatCurrency(Math.abs(balanceAfterPayment))}`}
+                </p>
               )}
             </div>
 
             <button
+              type="button"
               onClick={handleCreate}
-              disabled={!canCreate() || loading}
-              className={`w-full py-3 rounded-lg font-bold flex items-center justify-center gap-2 transition-colors ${
-                !canCreate() || loading ? 'bg-gray-300 text-gray-500 cursor-not-allowed' : 'bg-ospab-primary text-white hover:bg-ospab-primary/90 shadow-lg hover:shadow-xl'
+              disabled={!canCreate || submitting || loadingCart}
+              className={`mt-6 w-full flex items-center justify-center gap-2 py-3 rounded-lg font-semibold transition-colors ${
+                !canCreate || submitting || loadingCart
+                  ? 'bg-gray-200 text-gray-500 cursor-not-allowed'
+                  : 'bg-blue-600 text-white hover:bg-blue-500'
               }`}
             >
-              {loading ? (<><div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white"></div><span>Создание...</span></>) : (<><FiShoppingCart /><span>Создать бакет</span></>)}
+              {submitting ? (
+                <>
+                  <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-white border-t-transparent" />
+                  <span>Создаём бакет...</span>
+                </>
+              ) : (
+                <>
+                  <span>Оплатить и создать</span>
+                  <FiShoppingCart />
+                </>
+              )}
             </button>
-            {!canCreate() && (
-              <p className="text-xs text-gray-500 text-center mt-3">Заполните имя бакета, выберите план и убедитесь в достаточном балансе</p>
+
+            {!canCreate && !loadingCart && (
+              <p className="mt-3 text-xs text-gray-500">
+                Проверьте имя бакета, выбранный регион и достаточный баланс для оплаты тарифа.
+              </p>
             )}
           </div>
-        </div>
+        </aside>
       </div>
     </div>
   );
